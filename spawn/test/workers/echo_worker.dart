@@ -8,12 +8,24 @@ import 'dart:typed_data';
 
 import 'package:spawn/spawn.dart';
 
+import 'opaque_stub.dart' if (dart.library.js_interop) 'opaque_web.dart';
+
 /// Echoes messages, answers requests, and can be told to misbehave.
 Future<void> echoWorker(WorkerChannel channel) async {
   channel.handleRequests((request) async {
     if (request == 'boom') throw StateError('requested failure');
     if (request == 'initial') return channel.initialMessage;
     if (request == 'payload') return channel.caps.payload.name;
+    if (request is Map<String, Object?> && request['op'] == 'measure') {
+      // An opaque platform object arrived. Report what it actually is, which
+      // proves the browser handed us the real thing rather than a husk.
+      final canvas = (request['canvas']! as PlatformValue).value;
+      return <String, Object?>{
+        'width': measureOpaque(canvas, 'width'),
+        'height': measureOpaque(canvas, 'height'),
+      };
+    }
+    if (request is PlatformValue) return request; // echo it straight back
     if (request == 'slow') {
       await Future<void>.delayed(const Duration(milliseconds: 50));
       return 'slow-done';

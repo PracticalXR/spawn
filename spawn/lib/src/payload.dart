@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'frame.dart';
+import 'platform_value.dart';
 import 'wire.dart';
 
 /// Turns a user value into the `(typeId, payload)` pair a [Frame] carries.
@@ -43,7 +44,8 @@ Object? decodeValue(int typeId, Object? payload) {
 ///
 /// The portable set is `null`, `bool`, `int`, `double`, `String`, [TypedData],
 /// [ByteBuffer], and [List]s and [String]-keyed [Map]s of those. Anything else
-/// must implement [WireMessage].
+/// must implement [WireMessage], or be wrapped in a [PlatformValue] to say
+/// explicitly that it is platform-specific.
 ///
 /// This is checked on every platform, including the VM where an isolate would
 /// happily copy far more. A message that works in a test on the VM has to work
@@ -57,7 +59,10 @@ void _checkPortable(Object? value, List<Object> seen, String path) {
       value is num ||
       value is String ||
       value is TypedData ||
-      value is ByteBuffer) {
+      value is ByteBuffer ||
+      // Opaque by contract: the caller has said this is platform-specific, so
+      // there is nothing here to check and nothing to recurse into.
+      value is PlatformValue) {
     return;
   }
   if (value is List<Object?> || value is Map<Object?, Object?>) {
@@ -93,22 +98,25 @@ void _checkPortable(Object? value, List<Object> seen, String path) {
   throw ArgumentError.value(
     value,
     path,
-    'spawn cannot carry ${value.runtimeType}. Portable values are null, bool, '
+    'spawn cannot carry ${value.runtimeType}. Wrap a platform object '
+    '(VideoFrame, AudioData, ImageBitmap, ...) in a PlatformValue. '
+    'Portable values are null, bool, '
     'int, double, String, TypedData, ByteBuffer, and List/Map<String, ...> '
     'of those. Implement WireMessage for anything else.',
   );
 }
 
-/// Throws [ArgumentError] unless every entry of [transfer] is a buffer.
+/// Throws [ArgumentError] unless every entry of [transfer] can be moved.
 void checkTransfer(List<Object>? transfer) {
   if (transfer == null) return;
   for (var i = 0; i < transfer.length; i++) {
     final item = transfer[i];
-    if (item is! TypedData && item is! ByteBuffer) {
+    if (item is! TypedData && item is! ByteBuffer && item is! PlatformValue) {
       throw ArgumentError.value(
         item,
         'transfer[$i]',
-        'transfer entries must be TypedData or ByteBuffer, '
+        'transfer entries must be TypedData, ByteBuffer, or a PlatformValue '
+            'wrapping a transferable platform object, '
             'got ${item.runtimeType}',
       );
     }

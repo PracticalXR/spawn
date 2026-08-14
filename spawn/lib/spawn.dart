@@ -43,6 +43,7 @@ export 'src/errors.dart'
         SpawnPayloadMissingError,
         SpawnServiceUnavailableError;
 export 'src/jobs.dart' show JobEntry, Jobs;
+export 'src/platform_value.dart' show PlatformValue;
 export 'src/service.dart'
     show ServiceGrant, ServiceProvider, SpawnService, SpawnServices;
 export 'src/spawn.dart' show spawn, spawnLocal;

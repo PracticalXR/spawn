@@ -12,6 +12,7 @@ import '../entry.dart';
 import '../errors.dart';
 import '../frame.dart';
 import '../payload.dart';
+import '../platform_value.dart';
 import '../service.dart';
 import '../transport.dart';
 import '../wire.dart';
@@ -302,14 +303,18 @@ class _WebWorkerTransport implements WorkerTransport {
 (JSObject, JSArray<JSAny?>) _encodeFrame(Frame frame) {
   final message = JSObject();
   message.setProperty('h'.toJS, WireEnvelope.encodeHeader(frame.header).toJS);
+  // Opaque values are collected as the payload is converted, so they cost no
+  // extra traversal - and so a response can move one even though a response
+  // has no transfer list of its own.
+  final opaque = <JSAny>[];
   final payload = frame.payload;
   if (payload != null) {
     message.setProperty(
       'p'.toJS,
-      frame.isEncoded ? frame.bytes.toJS : _toJs(payload),
+      frame.isEncoded ? frame.bytes.toJS : _toJs(payload, opaque),
     );
   }
-  return (message, _transferList(frame.transfers));
+  return (message, _transferList(frame.transfers, opaque));
 }
 
 Frame? _decodeFrame(JSAny? data) {
@@ -343,26 +348,58 @@ Frame? _decodeFrame(JSAny? data) {
   );
 }
 
-JSArray<JSAny?> _transferList(List<Object>? transfer) {
+JSArray<JSAny?> _transferList(List<Object>? transfer, List<JSAny> opaque) {
   final array = JSArray<JSAny?>();
+  final moved = <JSAny>[];
+  // A duplicate entry in a transfer list is a DataCloneError, and a caller
+  // that both nests a PlatformValue and lists it is doing the obvious thing.
+  void add(JSAny value) {
+    for (final existing in moved) {
+      if (identical(existing, value)) return;
+    }
+    moved.add(value);
+    array.setProperty((moved.length - 1).toJS, value);
+  }
+
+  for (final value in opaque) {
+    add(value);
+  }
   if (transfer == null) return array;
   for (var i = 0; i < transfer.length; i++) {
     final item = transfer[i];
-    final JSAny buffer;
+    final JSAny? buffer;
     if (item is ByteBuffer) {
       buffer = item.toJS;
     } else if (item is TypedData) {
       buffer = item.buffer.toJS;
+    } else if (item is PlatformValue) {
+      // Already a JS object; the platform moves it as itself.
+      buffer = item.value as JSAny?;
     } else {
       continue;
     }
-    array.setProperty(i.toJS, buffer);
+    if (buffer == null) continue;
+    add(buffer);
   }
   return array;
 }
 
-JSAny? _toJs(Object? value) {
+/// Property name marking an opaque platform value inside a cloned message.
+///
+/// Structured clone gives back a plain object, so without a marker a
+/// `PlatformValue` would be indistinguishable from a `Map` on arrival - and a
+/// `VideoFrame` would decode into an empty map rather than a frame.
+const String _platformMarker = r'$spawn$platform';
+
+JSAny? _toJs(Object? value, List<JSAny> opaque) {
   if (value == null) return null;
+  if (value is PlatformValue) {
+    final holder = JSObject();
+    final inner = value.value as JSAny?;
+    holder.setProperty(_platformMarker.toJS, inner);
+    if (inner != null) opaque.add(inner);
+    return holder;
+  }
   if (value is bool) return value.toJS;
   if (value is int) return value.toJS;
   if (value is double) return value.toJS;
@@ -381,14 +418,14 @@ JSAny? _toJs(Object? value) {
   if (value is List<Object?>) {
     final array = JSArray<JSAny?>();
     for (var i = 0; i < value.length; i++) {
-      array.setProperty(i.toJS, _toJs(value[i]));
+      array.setProperty(i.toJS, _toJs(value[i], opaque));
     }
     return array;
   }
   if (value is Map<Object?, Object?>) {
     final object = JSObject();
     value.forEach((key, element) {
-      object.setProperty('$key'.toJS, _toJs(element));
+      object.setProperty('$key'.toJS, _toJs(element, opaque));
     });
     return object;
   }
@@ -444,6 +481,11 @@ Object? _fromJs(JSAny? value) {
       ];
     default:
       final object = value as JSObject;
+      if (object.hasProperty(_platformMarker.toJS).toDart) {
+        // Opaque on the way in, opaque on the way out: hand back exactly what
+        // the platform delivered, unconverted.
+        return PlatformValue(object.getProperty<JSAny?>(_platformMarker.toJS));
+      }
       final keys = _objectKeys(object);
       final length = keys.getProperty<JSNumber>('length'.toJS).toDartInt;
       return <String, Object?>{

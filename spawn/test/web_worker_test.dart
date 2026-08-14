@@ -4,6 +4,8 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
 
 import 'package:spawn/spawn.dart';
@@ -156,6 +158,47 @@ void main() {
       expect(result[result.length - 1], 9);
     });
 
+    test('an opaque platform object crosses, and is transferred', () async {
+      final worker = await spawn(realEntry);
+      addTearDown(() => worker.close(force: true));
+
+      // OffscreenCanvas stands in for a VideoFrame here: same story - an
+      // opaque, transferable platform object with no byte encoding - but one
+      // a test can conjure without a decoder.
+      final canvas = _OffscreenCanvas(64, 32);
+      expect(canvas.width, 64);
+
+      // No explicit transfer list: a PlatformValue always means "move this",
+      // because most of these types cannot be cloned at all.
+      final measured = await worker.request<Map<String, Object?>>(
+        <String, Object?>{'op': 'measure', 'canvas': PlatformValue(canvas)},
+      );
+
+      // The worker saw the real object, with its real dimensions.
+      expect(measured['width'], 64);
+      expect(measured['height'], 32);
+      // ...and this side no longer owns it: a transferred OffscreenCanvas is
+      // detached, and a detached one reports 0.
+      expect(
+        canvas.width,
+        0,
+        reason: 'the canvas should have been transferred, not cloned',
+      );
+    });
+
+    test('an opaque value round-trips back from the worker', () async {
+      final worker = await spawn(realEntry);
+      addTearDown(() => worker.close(force: true));
+      final canvas = _OffscreenCanvas(8, 4);
+      // Worker to host is the direction that matters: it is how a decoded
+      // VideoFrame reaches the main thread. A response has no transfer list,
+      // so this only works because a PlatformValue transfers itself.
+      final echoed = await worker.request<Object?>(PlatformValue(canvas));
+      expect(echoed, isA<PlatformValue>());
+      final returned = (echoed! as PlatformValue).value! as JSObject;
+      expect(returned.getProperty<JSNumber>('width'.toJS).toDartInt, 8);
+    });
+
     test('a handler throw closes the worker', () async {
       final worker = await spawn(realEntry);
       final errors = <Object>[];
@@ -236,4 +279,10 @@ void main() {
     addTearDown(() => worker.close(force: true));
     expect(() => worker.post(Object()), throwsA(isA<ArgumentError>()));
   });
+}
+
+@JS('OffscreenCanvas')
+extension type _OffscreenCanvas._(JSObject _) implements JSObject {
+  external factory _OffscreenCanvas(int width, int height);
+  external int get width;
 }

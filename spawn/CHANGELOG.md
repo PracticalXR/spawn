@@ -27,3 +27,10 @@ First release.
 - `JobEntry` parses and validates; `Jobs.enqueue` throws until deferred,
   OS-scheduled work lands.
 - `SpawnEntry.native` is reserved for a C- or wasm-hosted worker and throws.
+- `PlatformValue` carries an opaque platform object - a `VideoFrame`,
+  `AudioData`, `ImageBitmap`, `OffscreenCanvas` - through a channel untouched.
+  It always transfers rather than clones, including from a request response,
+  because most of those types cannot be cloned at all. This is what lets a
+  decode worker hand finished frames to the main thread.
+- `spawn:build` skips files in the worker directory that declare no `main`,
+  so a worker can sit next to its conditional-import stubs and helpers.

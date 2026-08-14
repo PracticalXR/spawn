@@ -79,11 +79,11 @@ Future<void> main(List<String> arguments) async {
     }
 
     if (!_declaresMain(entrypoint)) {
-      stderr.writeln(
-        '  $stem  ERROR  no `main` - a worker entrypoint needs '
-        '`void main() => runWorker(<handler>);`',
-      );
-      failures++;
+      // Not an entrypoint. Worker directories hold helper files too - a
+      // conditional-import stub, a shared protocol - and failing the build on
+      // them would force an artificial directory split.
+      stdout.writeln('  $stem  skipped  (no `main`, not an entrypoint)');
+      skipped++;
       continue;
     }
 

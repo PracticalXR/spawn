@@ -124,7 +124,29 @@ the host, and the worker calls it before the handler runs. On the web, pass
 the same function to `runWorker` in the payload's `main` — the payload never
 sees the entry.
 
-Anything outside both categories throws `ArgumentError` **on every platform**,
+### Platform objects
+
+Some values cannot play by that rule and should not have to. A `VideoFrame`
+decoded by WebCodecs is a GPU surface with no byte encoding worth the name,
+and copying it out to make it portable would defeat the reason it was decoded
+on a worker at all. Wrap it:
+
+```dart
+channel.send(<String, Object?>{
+  'ptsUs': timestamp,
+  'frame': PlatformValue(videoFrame),
+});
+```
+
+A `PlatformValue` always means *move this*, so it is added to the transfer
+list for you — including from a `request` response, which has no transfer list
+of its own. On arrival you get a `PlatformValue` back and cast out what you
+know is inside. The wrapper is deliberately visible: it is the one place the
+single-API promise is suspended, and a wrapped value will not cross a native-
+or wasm-hosted worker, because those boundaries carry bytes and there are none
+here.
+
+Anything outside all three categories throws `ArgumentError` **on every platform**,
 naming the offending value's path. That is deliberate: the VM would happily
 copy an arbitrary object graph that a browser cannot carry, and a package
 whose whole promise is one API should not let you write code that only works

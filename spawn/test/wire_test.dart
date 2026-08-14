@@ -295,6 +295,22 @@ void main() {
       }
     });
 
+    test('accepts an explicitly wrapped platform value', () {
+      expect(
+        () => checkPortable(const PlatformValue('anything at all')),
+        returnsNormally,
+      );
+      expect(
+        () =>
+            checkPortable(<String, Object?>{'frame': const PlatformValue(42)}),
+        returnsNormally,
+      );
+      expect(
+        () => checkTransfer(<Object>[const PlatformValue(42)]),
+        returnsNormally,
+      );
+    });
+
     test('rejects a plain object and names WireMessage', () {
       expect(
         () => checkPortable(Object()),
@@ -302,7 +318,7 @@ void main() {
           isA<ArgumentError>().having(
             (e) => e.message,
             'message',
-            contains('WireMessage'),
+            allOf(contains('WireMessage'), contains('PlatformValue')),
           ),
         ),
       );
