@@ -213,6 +213,14 @@ test('answers a probe', () async {
 | Web (all current browsers) | `Worker` | dart2js (`spawn:build`) | real move, source detaches |
 | Web, WasmGC payload | `Worker` | dart2wasm | planned; heap-born bytes copy once |
 
+One caveat worth knowing before you rely on `close(force: true)`: on native, a
+worker blocked inside a **synchronous native call** cannot be killed.
+`Isolate.kill` only takes effect at a message loop boundary, so an isolate
+sitting in a blocking FFI call keeps running and `close` returns while it does.
+Unblock the resource first — close the pipe, shut down the socket — then close
+the worker. `spawn` cannot do it for you, because only your code knows what the
+handler is waiting on. A Web Worker's `terminate()` has no such limit.
+
 Debug builds on the web fall back to running an `.inline` worker on the main
 thread — with one console warning naming the fix — when its payload will not
 load, so the edit-refresh loop never blocks on `spawn:build`. Release builds

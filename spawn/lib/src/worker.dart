@@ -151,6 +151,17 @@ class Worker implements WorkerClient {
   ///
   /// Idempotent, and safe to call from any client. Any [SpawnService] this
   /// worker held is released once shutdown completes.
+  ///
+  /// **A worker blocked in a synchronous native call cannot be killed.**
+  /// `Isolate.kill` only takes effect at a message loop boundary, so an
+  /// isolate sitting inside a blocking FFI call - `av_read_frame` on a live
+  /// stream, a socket read, a mutex wait - keeps running, and `close` returns
+  /// while it does. The remedy is always the same and always belongs to the
+  /// code that owns the resource: unblock it first (close the pipe, shut down
+  /// the socket) so the native call returns, and *then* close the worker.
+  /// A `Worker` cannot do that for you, because only the caller knows what the
+  /// handler is blocked on. Web Workers have no such caveat: `terminate()`
+  /// really does stop one.
   @override
   Future<void> close({bool force = false, Duration grace = _gracePeriod}) =>
       _core.shutdown(force: force, grace: grace);
