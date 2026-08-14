@@ -1,0 +1,8 @@
+tags:
+  browser:
+    # These need a compiled worker payload. CI builds it before running them:
+    #   dart run spawn:build test/workers
+    #   dart test -p chrome
+    description: Requires a browser and a built worker payload.
+
+platforms: [vm]

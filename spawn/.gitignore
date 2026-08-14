@@ -1,0 +1,12 @@
+.dart_tool/
+.packages
+pubspec.lock
+
+# Compiled worker payloads. Built by `dart run spawn:build`; CI builds them
+# before the browser suite. A package that SHIPS workers commits or publishes
+# its own payloads instead - these are only this package's test and example
+# artifacts.
+lib/workers/build/
+test/workers/build/
+example/workers/build/
+example/web/main.dart.js*

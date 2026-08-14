@@ -1,0 +1,21 @@
+name: spawn
+description: Background execution for Dart that works everywhere - isolates on native, Web Workers on the web, one API. The missing web half of dart:isolate.
+version: 0.1.0
+repository: https://github.com/PracticalXR/spawn/tree/main/spawn
+
+topics:
+  - isolates
+  - concurrency
+  - workers
+  - threading
+
+environment:
+  sdk: ^3.8.0
+
+# Zero runtime dependencies, on purpose: `spawn` is written to the standards of
+# an SDK library so it can stand as a candidate for one. Web bindings are
+# hand-rolled on dart:js_interop rather than taken from package:web.
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0

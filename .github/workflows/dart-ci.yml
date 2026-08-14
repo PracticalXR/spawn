@@ -1,0 +1,68 @@
+# Analysis and tests for spawn, on the VM and in a real browser.
+#
+# The browser leg is the point of this file. `spawn` exists so that one worker
+# runs on both platforms, and a suite that only ever runs on the VM cannot say
+# whether that is true - the web backend is the half with structured clone,
+# transfer lists and a separately compiled payload, which is to say the half
+# where things actually break.
+#
+# `dart run spawn:build test/workers` is a required step, not setup noise: the
+# browser tests load a real compiled payload over HTTP, and skipping the build
+# is what silently demotes them to the main-thread debug fallback.
+#
+# Analysis is fatal on infos here, unlike the sibling repos. The package is
+# written to Dart SDK library standards - zero runtime dependencies, strict
+# analysis, dartdoc on every public member - so an info is a defect.
+name: dart-ci
+
+on:
+  push:
+    paths:
+      - "spawn/**"
+      - ".github/workflows/dart-ci.yml"
+  pull_request:
+    paths:
+      - "spawn/**"
+      - ".github/workflows/dart-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: spawn
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: dev
+
+      - name: Dependencies
+        run: dart pub get
+
+      - name: Format
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Analyze
+        run: dart analyze --fatal-infos --fatal-warnings
+
+      - name: Test (VM)
+        run: dart test --reporter expanded
+
+      # Everything below is the browser leg.
+      - name: Build worker payloads
+        run: dart run spawn:build test/workers
+
+      - name: Test (Chrome)
+        run: dart test -p chrome --reporter expanded
+
+      - name: Examples still build
+        run: |
+          dart run example/spawn_example.dart
+          dart run spawn:build example/workers
+          dart compile js -O2 -o /tmp/example.js example/web/main.dart
+
+      - name: Publish dry run
+        run: dart pub publish --dry-run

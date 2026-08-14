@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>spawn — web example</title>
+  <style>
+    body { font: 14px/1.6 ui-monospace, monospace; margin: 2rem; }
+    #spinner { display: inline-block; }
+    pre { background: #1113; padding: 1rem; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1>spawn</h1>
+  <p>
+    The main thread stays responsive while a Web Worker sieves two million
+    numbers: <span id="spinner">|</span>
+  </p>
+  <pre id="output"></pre>
+  <script>
+    // Deliberately on the main thread. If the sieve ran here, this would stop.
+    const frames = ['|', '/', '-', '\\'];
+    let i = 0;
+    setInterval(() => {
+      document.getElementById('spinner').textContent = frames[i++ % 4];
+    }, 80);
+  </script>
+  <script defer src="main.dart.js"></script>
+</body>
+</html>
