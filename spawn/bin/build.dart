@@ -207,7 +207,11 @@ int _fingerprintInputs(String workerDir) {
     final file = File(path);
     if (file.existsSync()) hash = _mix(hash, _hashFile(file));
   }
-  for (final directory in <String>['lib', workerDir]) {
+  for (final directory in <String>[
+    ..._pathDependencyLibDirs(),
+    'lib',
+    workerDir,
+  ]) {
     final dir = Directory(directory);
     if (!dir.existsSync()) continue;
     final files =
@@ -223,6 +227,52 @@ int _fingerprintInputs(String workerDir) {
     }
   }
   return hash;
+}
+
+/// The `lib/` directory of every path dependency, from the package config.
+///
+/// Only path dependencies: a hosted package cannot change without its version
+/// changing, which `pubspec.lock` already covers.
+List<String> _pathDependencyLibDirs() {
+  final config = File('.dart_tool/package_config.json');
+  if (!config.existsSync()) return const <String>[];
+  final Object? decoded;
+  try {
+    decoded = jsonDecode(config.readAsStringSync());
+  } on FormatException {
+    return const <String>[];
+  }
+  if (decoded is! Map<String, Object?>) return const <String>[];
+  final packages = decoded['packages'];
+  if (packages is! List<Object?>) return const <String>[];
+
+  final dirs = <String>[];
+  for (final entry in packages) {
+    if (entry is! Map<String, Object?>) continue;
+    final rootUri = entry['rootUri'];
+    if (rootUri is! String) continue;
+    // A path dependency's rootUri is RELATIVE, resolved against .dart_tool/.
+    // Only hosted and git packages get an absolute file: URI, and those are
+    // exactly the ones that cannot change without their version changing.
+    final String root;
+    if (rootUri.startsWith('file:')) {
+      root = Uri.parse(rootUri).toFilePath();
+    } else if (rootUri.startsWith('..') || rootUri.startsWith('./')) {
+      root = Uri.directory('.dart_tool/').resolve(rootUri).toFilePath();
+    } else {
+      continue;
+    }
+    final normalized = root
+        .replaceAll(r'\', '/')
+        .replaceAll(RegExp(r'/+$'), '');
+    if (normalized.contains('/hosted/') || normalized.contains('/git/')) {
+      continue;
+    }
+    if (Directory('$normalized/lib').existsSync()) {
+      dirs.add('$normalized/lib');
+    }
+  }
+  return dirs;
 }
 
 /// FNV-1a over the file's bytes. Not a security hash - a change detector.

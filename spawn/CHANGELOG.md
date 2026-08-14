@@ -33,4 +33,7 @@ First release.
   because most of those types cannot be cloned at all. This is what lets a
   decode worker hand finished frames to the main thread.
 - `spawn:build` skips files in the worker directory that declare no `main`,
-  so a worker can sit next to its conditional-import stubs and helpers.
+  so a worker can sit next to its conditional-import stubs and helpers, and
+  its up-to-date check now covers path dependencies. A payload that ignored
+  changes to a sibling package under active development is worse than no
+  caching at all: the tests pass against code that is no longer there.
