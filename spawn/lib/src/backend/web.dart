@@ -42,8 +42,13 @@ Future<Worker> connect(
   }
   final url = resolveAssetUrl(entry.asset);
   final (typeId, payload) = encodeValue(message);
+  // A plain message, NOT a hello. A `hello` payload is caps JSON by
+  // definition, so decoding one always reads bytes - and an init carrying a
+  // portable value (a map of config, say) would be reinterpreted as a byte
+  // array. The worker treats whatever arrives first as its init, so the kind
+  // carries no extra meaning here and the honest one is `message`.
   final initFrame = Frame(
-    WireKind.hello,
+    WireKind.message,
     typeId: typeId,
     payload: payload,
     transfers: transfer,

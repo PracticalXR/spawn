@@ -116,6 +116,26 @@ void main() {
       expect(await worker.request<String>('initial'), 'seeded');
     });
 
+    test('a structured initial message survives the init frame', () async {
+      // A String initial message survived a bug here by accident; a map did
+      // not. The init frame must be decoded by the same rules as any other
+      // payload rather than assumed to be bytes.
+      final worker = await spawn(
+        realEntry,
+        message: <String, Object?>{
+          'name': 'config',
+          'count': 3,
+          'nested': <Object?>[1, null, 'two'],
+        },
+      );
+      addTearDown(() => worker.close(force: true));
+      expect(await worker.request<Object?>('initial'), <String, Object?>{
+        'name': 'config',
+        'count': 3,
+        'nested': <Object?>[1, null, 'two'],
+      });
+    });
+
     test('a WireMessage decodes on the other side', () async {
       final worker = await spawn(realEntry);
       addTearDown(() => worker.close(force: true));

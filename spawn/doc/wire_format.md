@@ -27,7 +27,7 @@ Little-endian. A 12-byte header, then `payloadLength` bytes.
 | code | kind | direction | meaning |
 |---|---|---|---|
 | 0 | `hello` | worker → host | "I am running", carrying capabilities. Sent once, first. `spawn()` completes on it. |
-| 0 | `hello` | host → worker | *web only:* the init frame, carrying the initial message. Not part of the native handshake, which passes it in the isolate's spawn message. |
+| 2 | `message` | host → worker | *web only:* the first one is the init frame, carrying `spawn`'s `message` argument. The worker treats whatever arrives first as its init, so this needs no kind of its own — and must not borrow `hello`, whose payload is caps JSON by definition. |
 | 1 | `bye` | both | host → worker: return from your handler. worker → host: I have returned. |
 | 2 | `message` | both | one-way. `WorkerClient.post` and `WorkerChannel.send`. |
 | 3 | `request` | host → worker | expects a `response` or an `error` with the same `correlationId`. |
