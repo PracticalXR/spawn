@@ -34,7 +34,7 @@
 library;
 
 export 'src/caps.dart' show SpawnCaps, SpawnHost, SpawnPayload;
-export 'src/channel.dart' show WorkerChannel;
+export 'src/channel.dart' show SpawnReply, WorkerChannel;
 export 'src/entry.dart' show SpawnEntry, SpawnEntryKind, WorkerHandler;
 export 'src/errors.dart'
     show

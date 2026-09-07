@@ -148,6 +148,32 @@ Future<Worker> _cannotStart(
 /// The entrypoint of a compiled worker payload; see `runWorker`.
 void runWorkerEntrypoint(WorkerHandler handler) {
   _WebWorkerTransport? transport;
+  // 🔴 A MESSAGE THE WORKER CANNOT DESERIALIZE IS NEVER DELIVERED. The
+  // browser fires `messageerror` on the worker's global scope instead of
+  // `message`, with no data at all — so without this handler the request
+  // simply never arrives: no reply, no error, and the host waits for its
+  // timeout (an iPad, 2026-09-01: every request carrying a transferred
+  // VideoFrame vanished this way while every other request was answered).
+  // The correlation id is inside the data the browser could not clone, so
+  // the report cannot name the request; the host fails every request in
+  // flight with it and KEEPS the worker — the worker is fine, the message
+  // was not.
+  _self.onmessageerror = ((JSAny? _) {
+    final t = transport ?? _WebWorkerTransport();
+    t.send(
+      Frame(
+        WireKind.error,
+        payload: encodeErrorPayload(
+          'DataCloneError',
+          'a message from the host could not be deserialized by the worker '
+              '(messageerror) — a platform object in it (a VideoFrame, an '
+              'ImageBitmap, …) cannot cross into a worker on this browser; '
+              'the request it carried will never be answered',
+          '',
+        ),
+      ),
+    );
+  }).toJS;
   _self.onmessage = ((_MessageEvent event) {
     final frame = _decodeFrame(event.data);
     if (frame == null) return;
@@ -212,8 +238,38 @@ class _WebHostTransport implements WorkerTransport {
       if (frame.kind == WireKind.bye) unawaited(kill());
     }).toJS;
     _worker.onerror = ((JSAny? event) {
-      if (_loaded.isCompleted || _loadFailure.isCompleted) return;
-      _loadFailure.complete(_describeErrorEvent(event));
+      if (!_loaded.isCompleted && !_loadFailure.isCompleted) {
+        _loadFailure.complete(_describeErrorEvent(event));
+        return;
+      }
+      // 🔴 AN ERROR AFTER LOAD WAS DROPPED ON THE FLOOR, AND THAT COST A DAY.
+      // Everything above only handled the worker failing to START. Once the
+      // hello had arrived, an UNCAUGHT error inside the worker — a throw from
+      // a callback the browser invoked, so no request's `catch` can see it —
+      // was ignored here: the request in flight was simply never answered and
+      // the host learned nothing until its own timeout. On 2026-09-01 that
+      // timeout ("did not answer within 6s") was then read by the caller as a
+      // hung GPU import and it walked a whole fallback ladder for a worker
+      // that had died on its first `print`.
+      //
+      // So it is REPORTED, as the worker's own errors are: a correlation-less
+      // error frame carrying the browser's message. The worker is not
+      // terminated here — an `ErrorEvent` is a fact about one callback and
+      // the worker's event loop is still running — but the host's protocol
+      // treats an unattributable error as fatal and tears the route down,
+      // which is the honest answer for a worker whose state is now unknown.
+      if (_incoming.isClosed) return;
+      _incoming.add(
+        Frame(
+          WireKind.error,
+          payload: encodeErrorPayload(
+            'WorkerError',
+            'the worker threw an uncaught error: '
+                '${_describeErrorEvent(event)}',
+            '',
+          ),
+        ),
+      );
     }).toJS;
     _worker.onmessageerror = ((JSAny? _) {
       if (_incoming.isClosed) return;
@@ -252,7 +308,7 @@ class _WebHostTransport implements WorkerTransport {
   @override
   void send(Frame frame) {
     if (_dead) return;
-    final (message, transfers) = _encodeFrame(frame);
+    final (message, transfers) = encodeWebFrame(frame);
     _worker.postMessage(message, transfers);
   }
 
@@ -283,7 +339,7 @@ class _WebWorkerTransport implements WorkerTransport {
   @override
   void send(Frame frame) {
     if (_dead) return;
-    final (message, transfers) = _encodeFrame(frame);
+    final (message, transfers) = encodeWebFrame(frame);
     _self.postMessage(message, transfers);
   }
 
@@ -305,21 +361,25 @@ class _WebWorkerTransport implements WorkerTransport {
 // Frame <-> structured clone
 // --------------------------------------------------------------------------
 
-(JSObject, JSArray<JSAny?>) _encodeFrame(Frame frame) {
+/// The web transport's encoded message and its exact transferable objects.
+/// Kept at this internal seam so MessageChannel tests exercise the same
+/// conversion used by both host requests and worker replies.
+(JSObject, JSArray<JSAny?>) encodeWebFrame(Frame frame) {
   final message = JSObject();
   message.setProperty('h'.toJS, WireEnvelope.encodeHeader(frame.header).toJS);
   // Opaque values are collected as the payload is converted, so they cost no
   // extra traversal - and so a response can move one even though a response
   // has no transfer list of its own.
   final opaque = <JSAny>[];
+  final conversion = _TransferredBuffers(frame.transfers);
   final payload = frame.payload;
   if (payload != null) {
     message.setProperty(
       'p'.toJS,
-      frame.isEncoded ? frame.bytes.toJS : _toJs(payload, opaque),
+      _toJs(payload, opaque, conversion),
     );
   }
-  return (message, _transferList(frame.transfers, opaque));
+  return (message, _transferList(frame.transfers, opaque, conversion));
 }
 
 Frame? _decodeFrame(JSAny? data) {
@@ -353,14 +413,79 @@ Frame? _decodeFrame(JSAny? data) {
   );
 }
 
-JSArray<JSAny?> _transferList(List<Object>? transfer, List<JSAny> opaque) {
+class _TransferredBuffer {
+  _TransferredBuffer(this.source);
+  final ByteBuffer source;
+  JSArrayBuffer? converted;
+}
+
+/// Convert an explicitly transferred backing once, then use that SAME JS
+/// buffer in payload views and postMessage's transfer list. Dart-owned
+/// buffers clone on every toJS under Wasm; independent conversions move an
+/// unused clone while the real payload still pays a structured-clone copy.
+/// Unlisted views keep their normal view-only conversion, so a small slice
+/// of a large scratch buffer does not suddenly copy the entire allocation.
+class _TransferredBuffers {
+  _TransferredBuffers(List<Object>? transfer) {
+    if (transfer == null) return;
+    for (final item in transfer) {
+      final buffer = item is ByteBuffer
+          ? item
+          : item is TypedData
+              ? item.buffer
+              : null;
+      if (buffer != null && !_buffers.any((b) => b.source == buffer)) {
+        _buffers.add(_TransferredBuffer(buffer));
+      }
+    }
+  }
+
+  // ByteBuffer getters may return fresh wrappers. Equality compares their
+  // backing, whereas identical would miss aliased views on Dart/Wasm.
+  final _buffers = <_TransferredBuffer>[];
+  Map<TypedData, JSObject>? _views;
+
+  JSArrayBuffer? forBuffer(ByteBuffer source) {
+    for (final entry in _buffers) {
+      if (entry.source == source) {
+        return entry.converted ??= entry.source.toJS;
+      }
+    }
+    return null;
+  }
+
+  JSObject view(TypedData source, JSArrayBuffer buffer) {
+    final views = _views ??= Map<TypedData, JSObject>.identity();
+    return views.putIfAbsent(source, () {
+      final offset = source.offsetInBytes;
+      if (source is Uint8List) return JSUint8Array(buffer, offset, source.length);
+      if (source is Int8List) return JSInt8Array(buffer, offset, source.length);
+      if (source is Uint8ClampedList) {
+        return JSUint8ClampedArray(buffer, offset, source.length);
+      }
+      if (source is Int16List) return JSInt16Array(buffer, offset, source.length);
+      if (source is Uint16List) return JSUint16Array(buffer, offset, source.length);
+      if (source is Int32List) return JSInt32Array(buffer, offset, source.length);
+      if (source is Uint32List) return JSUint32Array(buffer, offset, source.length);
+      if (source is Float32List) return JSFloat32Array(buffer, offset, source.length);
+      if (source is Float64List) return JSFloat64Array(buffer, offset, source.length);
+      if (source is ByteData) return JSDataView(buffer, offset, source.lengthInBytes);
+      throw ArgumentError.value(source, 'message', 'spawn cannot carry this value');
+    });
+  }
+}
+
+JSArray<JSAny?> _transferList(List<Object>? transfer, List<JSAny> opaque,
+    _TransferredBuffers conversion) {
   final array = JSArray<JSAny?>();
   final moved = <JSAny>[];
   // A duplicate entry in a transfer list is a DataCloneError, and a caller
   // that both nests a PlatformValue and lists it is doing the obvious thing.
   void add(JSAny value) {
     for (final existing in moved) {
-      if (identical(existing, value)) return;
+      // Wasm can wrap one JS object more than once. Dart wrapper identity
+      // would leave duplicate ArrayBuffers in postMessage's transfer list.
+      if (_sameJsObject(existing, value)) return;
     }
     moved.add(value);
     array.setProperty((moved.length - 1).toJS, value);
@@ -374,12 +499,14 @@ JSArray<JSAny?> _transferList(List<Object>? transfer, List<JSAny> opaque) {
     final item = transfer[i];
     final JSAny? buffer;
     if (item is ByteBuffer) {
-      buffer = item.toJS;
+      buffer = conversion.forBuffer(item);
     } else if (item is TypedData) {
-      buffer = item.buffer.toJS;
+      buffer = conversion.forBuffer(item.buffer);
     } else if (item is PlatformValue) {
-      // Already a JS object; the platform moves it as itself.
-      buffer = item.value as JSAny?;
+      // Already a JS object; the platform moves it as itself - unless it is
+      // shared memory, which is cloned by sharing and cannot be moved at all.
+      final inner = item.value as JSAny?;
+      buffer = (inner != null && _isSharedMemory(inner)) ? null : inner;
     } else {
       continue;
     }
@@ -389,6 +516,9 @@ JSArray<JSAny?> _transferList(List<Object>? transfer, List<JSAny> opaque) {
   return array;
 }
 
+@JS('Object.is')
+external bool _sameJsObject(JSAny left, JSAny right);
+
 /// Property name marking an opaque platform value inside a cloned message.
 ///
 /// Structured clone gives back a plain object, so without a marker a
@@ -396,20 +526,36 @@ JSArray<JSAny?> _transferList(List<Object>? transfer, List<JSAny> opaque) {
 /// `VideoFrame` would decode into an empty map rather than a frame.
 const String _platformMarker = r'$spawn$platform';
 
-JSAny? _toJs(Object? value, List<JSAny> opaque) {
+/// Whether [value] is shared memory, which must be CLONED rather than moved.
+///
+/// A `SharedArrayBuffer` is the one platform object whose whole purpose is to
+/// exist on both sides at once. Structured clone shares it - both threads end
+/// up addressing the same memory - and listing one for transfer is a
+/// `DataCloneError`, so the two things a `PlatformValue` normally does are
+/// exactly inverted here. There is nothing for the caller to opt into: moving
+/// shared memory is never what anyone means.
+bool _isSharedMemory(JSAny value) =>
+    _constructorName(value) == 'SharedArrayBuffer';
+
+JSAny? _toJs(Object? value, List<JSAny> opaque,
+    _TransferredBuffers conversion) {
   if (value == null) return null;
   if (value is PlatformValue) {
     final holder = JSObject();
     final inner = value.value as JSAny?;
     holder.setProperty(_platformMarker.toJS, inner);
-    if (inner != null) opaque.add(inner);
+    if (inner != null && !_isSharedMemory(inner)) opaque.add(inner);
     return holder;
   }
   if (value is bool) return value.toJS;
   if (value is int) return value.toJS;
   if (value is double) return value.toJS;
   if (value is String) return value.toJS;
-  if (value is ByteBuffer) return value.toJS;
+  if (value is ByteBuffer) return conversion.forBuffer(value) ?? value.toJS;
+  if (value is TypedData) {
+    final buffer = conversion.forBuffer(value.buffer);
+    if (buffer != null) return conversion.view(value, buffer);
+  }
   if (value is Uint8List) return value.toJS;
   if (value is Int8List) return value.toJS;
   if (value is Uint8ClampedList) return value.toJS;
@@ -423,14 +569,14 @@ JSAny? _toJs(Object? value, List<JSAny> opaque) {
   if (value is List<Object?>) {
     final array = JSArray<JSAny?>();
     for (var i = 0; i < value.length; i++) {
-      array.setProperty(i.toJS, _toJs(value[i], opaque));
+      array.setProperty(i.toJS, _toJs(value[i], opaque, conversion));
     }
     return array;
   }
   if (value is Map<Object?, Object?>) {
     final object = JSObject();
     value.forEach((key, element) {
-      object.setProperty('$key'.toJS, _toJs(element, opaque));
+      object.setProperty('$key'.toJS, _toJs(element, opaque, conversion));
     });
     return object;
   }
@@ -530,6 +676,7 @@ extension type _MessageEvent._(JSObject _) implements JSObject {
 
 extension type _WorkerGlobalScope._(JSObject _) implements JSObject {
   external set onmessage(JSFunction? value);
+  external set onmessageerror(JSFunction? value);
   external void postMessage(JSAny? message, JSArray<JSAny?> transfer);
   external void close();
 }

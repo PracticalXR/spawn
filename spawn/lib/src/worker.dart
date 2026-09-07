@@ -304,6 +304,29 @@ class _WorkerCore {
               ?.completeError(error, StackTrace.current);
           return;
         }
+        // 'WorkerError' is the web backend's post-load `onerror` (an uncaught
+        // throw inside the worker — 2026-09-01 it was a console.log hook
+        // crashing under dart2js): the worker is still running, the request
+        // it was serving never answered, and the browser's message is the
+        // only diagnosis there is. Same treatment as a clone failure: fail
+        // what is in flight WITH the message, keep the worker.
+        if (type == 'DataCloneError' || type == 'WorkerError') {
+          // The WORKER is alive; ONE message could not be deserialized there
+          // and it cannot say which (the id was inside the data). Every
+          // request in flight might be the one, so all of them fail with the
+          // reason — and the worker stays, because the next portable message
+          // will be delivered as usual. With nothing in flight it was a
+          // `post`, and the events stream is the only place left to say so.
+          final orphans = List<_Pending>.of(_pending.values);
+          _pending.clear();
+          if (orphans.isEmpty) {
+            _emitToAll(_Event.error(error, StackTrace.current));
+          }
+          for (final pending in orphans) {
+            pending.completeError(error, StackTrace.current);
+          }
+          return;
+        }
         fatalError = error;
         _emitToAll(_Event.error(error, StackTrace.current));
         unawaited(shutdown(force: true));

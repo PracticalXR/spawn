@@ -88,6 +88,37 @@ Future<void> runHandlerOn(
   }
 }
 
+/// A request-handler return value that names buffers to MOVE, not clone.
+///
+/// The request direction has had a `transfer` list from the start; the
+/// RESPONSE direction had none, so every reply was structured-cloned. For a
+/// worker returning a decoded video frame that was a full W×H×4 copy per
+/// frame — 3.7 MB at 720p, 29.5 MB at 5K — on the receiving thread. Wrap
+/// the reply instead:
+///
+/// ```dart
+/// channel.handleRequests((req) {
+///   final rgba = decode(req);
+///   return SpawnReply({'rgba': rgba}, transfer: [rgba.buffer]);
+/// });
+/// ```
+///
+/// Additive: handlers returning a plain value behave exactly as before. The
+/// [transfer] entries obey `send`'s rules ([checkTransfer]), and the buffers
+/// named must be the SAME ones referenced by [value] — a transferred buffer
+/// is detached on the sending side, so the worker must not touch it again.
+class SpawnReply {
+  /// Wraps [value] with an optional [transfer] list.
+  const SpawnReply(this.value, {this.transfer});
+
+  /// The actual reply, delivered to the requester exactly as if the
+  /// handler had returned it bare.
+  final Object? value;
+
+  /// Buffers to MOVE with the reply. Same rules as `send`'s `transfer`.
+  final List<Object>? transfer;
+}
+
 class _WorkerChannel implements WorkerChannel {
   _WorkerChannel(this._transport, this.initialMessage, this.caps);
 
@@ -180,6 +211,12 @@ class _WorkerChannel implements WorkerChannel {
     answer.then(
       (Object? value) {
         try {
+          List<Object>? transfer;
+          if (value is SpawnReply) {
+            transfer = value.transfer;
+            checkTransfer(transfer);
+            value = value.value;
+          }
           final (typeId, payload) = encodeValue(value);
           _transport.send(
             Frame(
@@ -187,6 +224,7 @@ class _WorkerChannel implements WorkerChannel {
               typeId: typeId,
               correlationId: frame.correlationId,
               payload: payload,
+              transfers: transfer,
             ),
           );
         } on Object catch (error, stack) {

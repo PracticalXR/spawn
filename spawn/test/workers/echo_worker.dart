@@ -25,6 +25,17 @@ Future<void> echoWorker(WorkerChannel channel) async {
         'height': measureOpaque(canvas, 'height'),
       };
     }
+    if (request == 'reply-map') {
+      // The gszc decode worker's exact shape: bytes plus metadata in one Map,
+      // the buffer named in the transfer list. Exercises the native
+      // backend's map-entry transfer shapes (3/4).
+      final bytes =
+          Uint8List.fromList(List<int>.generate(64, (i) => (i * 3) & 0xff));
+      return SpawnReply(
+        <String, Object?>{'rgba': bytes, 'needsKeyframe': true},
+        transfer: <Object>[bytes.buffer],
+      );
+    }
     if (request is PlatformValue) return request; // echo it straight back
     if (request == 'slow') {
       await Future<void>.delayed(const Duration(milliseconds: 50));

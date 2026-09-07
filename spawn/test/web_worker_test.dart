@@ -150,7 +150,9 @@ void main() {
       final worker = await spawn(realEntry);
       addTearDown(() => worker.close(force: true));
 
-      final bytes = Uint8List(4 * 1024 * 1024);
+      // JS-owned storage is movable under both dart2js and dart2wasm.
+      // Wasm GC-owned Dart storage itself cannot detach when converted.
+      final bytes = JSUint8Array.withLength(4 * 1024 * 1024).toDart;
       bytes[0] = 7;
       bytes[bytes.length - 1] = 9;
       final buffer = bytes.buffer;
@@ -164,8 +166,8 @@ void main() {
 
       worker.post(bytes, transfer: <Object>[buffer]);
 
-      // This is the guarantee native cannot make: the platform really moved
-      // the memory, so the source is now an empty, detached ArrayBuffer.
+      // The platform moved the original JS storage, so the source is now
+      // an empty, detached ArrayBuffer.
       expect(
         buffer.lengthInBytes,
         0,
@@ -176,6 +178,31 @@ void main() {
       expect(result.lengthInBytes, 4 * 1024 * 1024);
       expect(result[0], 7);
       expect(result[result.length - 1], 9);
+    });
+
+    test('an encoded request transfers an offset byte view', () async {
+      final worker = await spawn(realEntry);
+      addTearDown(() => worker.close(force: true));
+      final source = JSUint8Array.withLength(64).toDart;
+      source.setAll(0, List.generate(64, (i) => 255 - i));
+      final bytes = Uint8List.view(source.buffer, 8, 16);
+      final expected = List<int>.from(bytes);
+      final sourceBuffer = source.buffer;
+      final answer = await worker.request<Blob>(
+        Blob(bytes),
+        transfer: [bytes, sourceBuffer, bytes.buffer],
+      );
+      expect(sourceBuffer.lengthInBytes, 0);
+      expect(answer.bytes, expected);
+      expect(answer.bytes.offsetInBytes, 8);
+    });
+
+    test('a transferred reply map carries bytes and metadata', () async {
+      final worker = await spawn(realEntry);
+      addTearDown(() => worker.close(force: true));
+      final answer = await worker.request<Map<String, Object?>>('reply-map');
+      expect(answer['needsKeyframe'], isTrue);
+      expect(answer['rgba'], List.generate(64, (i) => (i * 3) & 0xff));
     });
 
     test('an opaque platform object crosses, and is transferred', () async {

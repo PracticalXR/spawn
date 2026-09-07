@@ -121,8 +121,9 @@ class _NativeFrame {
     this.payload,
     this.port,
     this.transferred,
-    this.transferShape,
-  );
+    this.transferShape, [
+    this.transferKey,
+  ]);
 
   final int kind;
   final int typeId;
@@ -131,8 +132,18 @@ class _NativeFrame {
   final SendPort? port;
   final TransferableTypedData? transferred;
 
-  /// 0 none, 1 the payload was a `Uint8List`, 2 the payload was a `ByteBuffer`.
+  /// 0 none, 1 the payload was a `Uint8List`, 2 the payload was a
+  /// `ByteBuffer`, 3/4 the SAME two shapes but for one entry INSIDE a Map
+  /// payload (its key rides in [transferKey]; the rest of the map travels by
+  /// copy). 3/4 exist because the WEB backend has always transferred buffers
+  /// nested one level down (`_transferList` walks the values) while this one
+  /// only matched the whole payload — so a worker returning
+  /// `{'rgba': bytes, ...}` transferred on web and took the plain
+  /// isolate-send path on native, silently, per frame.
   final int transferShape;
+
+  /// The Map key whose value was extracted into [transferred] (shapes 3/4).
+  final Object? transferKey;
 
   Frame? toFrame() {
     final kindValue = WireKind.fromCode(kind);
@@ -141,7 +152,15 @@ class _NativeFrame {
     final moved = transferred;
     if (moved != null) {
       final buffer = moved.materialize();
-      value = transferShape == 2 ? buffer : buffer.asUint8List();
+      if (transferShape == 3 || transferShape == 4) {
+        // Shapes 3/4: reassemble the Map around the moved buffer.
+        final map = Map<Object?, Object?>.of(payload! as Map);
+        map[transferKey] =
+            transferShape == 4 ? buffer : buffer.asUint8List();
+        value = map;
+      } else {
+        value = transferShape == 2 ? buffer : buffer.asUint8List();
+      }
     }
     return Frame(
       kindValue,
@@ -178,6 +197,34 @@ class _NativeFrame {
             TransferableTypedData.fromList(<Uint8List>[payload.asUint8List()]),
             2,
           );
+        }
+      }
+      // One level into a Map — the shape every worker that returns bytes
+      // PLUS metadata uses (`{'rgba': bytes, 'needsKeyframe': flag}`), and
+      // the shape the web backend has always transferred. First matching
+      // entry wins; the remainder of the map is small metadata that copies.
+      if (payload is Map) {
+        for (final entry in payload.entries) {
+          final Object? v = entry.value;
+          if (v is! Uint8List && v is! ByteBuffer) continue;
+          for (final candidate in transfers) {
+            // `v!`: the is!-checks above exclude null, but a two-type union
+            // is beyond flow promotion.
+            if (!bufferMatches(v!, candidate)) continue;
+            final rest = Map<Object?, Object?>.of(payload)..remove(entry.key);
+            return _NativeFrame(
+              frame.kind.code,
+              frame.typeId,
+              frame.correlationId,
+              rest,
+              port,
+              TransferableTypedData.fromList(<Uint8List>[
+                v is Uint8List ? v : (v as ByteBuffer).asUint8List(),
+              ]),
+              v is Uint8List ? 3 : 4,
+              entry.key,
+            );
+          }
         }
       }
     }

@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.1.1
+
+Three ways a message could go missing, and the response direction learning to
+transfer.
+
+- **Native transfer never actually transferred.** The payload matcher compared
+  `ByteBuffer`s with `identical`, and on the VM every `.buffer` access on
+  internal typed data allocates a fresh wrapper — so `identical(u.buffer,
+  u.buffer)` is false and no match ever fired. The designed transfer machinery
+  had been dead code since it shipped, silently: the fallback delivers
+  identical bytes, so every test asserting content passed. Now compared with
+  `==`, which on the VM asks about the backing store's identity — the question
+  actually being asked — and on the web degrades to `identical` unchanged.
+
+- **Native now transfers one level into a Map**, which is the shape every
+  worker returning bytes actually produces (`{'rgba': bytes, ...}`). The web
+  backend had always walked a Map's values; native only matched a whole-payload
+  buffer, so the same worker transferred on web and took the plain isolate-send
+  path on native, per frame, with nothing to show for it.
+
+- **New `SpawnReply`**: a request handler can now name buffers to move rather
+  than clone on the way BACK. The request direction has had `transfer:` from
+  the start; the response direction had none, so a worker returning a decoded
+  frame paid a full W×H×4 structured clone on the receiving thread — 3.7 MB at
+  720p, 29.5 MB at 5K.
+
+- **Web: a message the worker cannot deserialize is no longer lost in
+  silence.** The browser fires `messageerror` on the worker's global scope
+  instead of `message`, with no data at all, so the request simply never
+  arrived — no reply, no error, and the host waited out its timeout. Seen on an
+  iPad, where every request carrying a transferred `VideoFrame` vanished this
+  way while every other request was answered. The correlation id is inside the
+  data the browser could not clone, so the report cannot name the request: every
+  request in flight fails with the reason and the worker is KEPT, because the
+  worker is fine and the next portable message will be delivered as usual.
+
+- **Web: an error AFTER the worker loaded is no longer dropped.** Only failure
+  to START was handled, so an uncaught throw inside a running worker left the
+  request it was serving unanswered with no diagnosis anywhere. It is now
+  treated like a clone failure — fail what is in flight with the browser's
+  message, keep the worker.
+
 ## 0.1.0
 
 First release.

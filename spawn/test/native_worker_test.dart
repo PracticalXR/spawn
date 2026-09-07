@@ -41,6 +41,25 @@ void main() {
     expect(await worker.request<Object?>('initial'), <String, Object?>{'k': 1});
   });
 
+  test('a SpawnReply MAP with a transferred entry reassembles intact', () async {
+    // The decode-worker shape: bytes + metadata in one Map, buffer in the
+    // transfer list. The map used to fall through to the deep-copy path on
+    // native (`bufferMatches` only matched the WHOLE payload) — web
+    // transferred, native copied 29.5 MB per 5K frame, silently. Shapes 3/4
+    // extract the entry, move the bytes, and reassemble around the same key;
+    // this pins the reassembly (a wrong key or shape loses the frame).
+    final worker = await spawn(echoEntry);
+    addTearDown(() => worker.close(force: true));
+    final out = await worker.request<Map<Object?, Object?>>('reply-map');
+    expect(out['needsKeyframe'], isTrue,
+        reason: 'the non-transferred metadata must survive alongside');
+    final rgba = out['rgba']! as Uint8List;
+    expect(rgba.length, 64);
+    for (var i = 0; i < 64; i++) {
+      expect(rgba[i], (i * 3) & 0xff);
+    }
+  });
+
   test('moves 64 MB through a transfer', () async {
     final worker = await spawn(echoEntry);
     addTearDown(() => worker.close(force: true));
