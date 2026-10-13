@@ -1,3 +1,5 @@
+import 'termination.dart';
+
 /// Thrown when a worker cannot be started, or does not start in time.
 ///
 /// ```dart
@@ -21,6 +23,38 @@ class SpawnException implements Exception {
   String toString() => cause == null
       ? 'SpawnException: $message'
       : 'SpawnException: $message ($cause)';
+}
+
+/// A failed startup that retains dedicated worker termination custody.
+///
+/// This remains a [SpawnException] for existing callers. Its message and cause
+/// describe startup; [cleanupError] separately records a failed cleanup attempt.
+class SpawnStartupException extends SpawnException
+    implements SpawnStartupFailure {
+  /// Creates a startup failure retaining [termination] and [requestStop].
+  SpawnStartupException(
+    String message, {
+    Object? cause,
+    required this.termination,
+    required Future<void> Function() requestStop,
+    this.cleanupError,
+  }) : _requestStop = requestStop,
+       super(message, cause);
+
+  /// The backend's original termination future.
+  @override
+  final Future<WorkerTerminationEvidence> termination;
+
+  /// A failure encountered while requesting stop or cleaning up the route.
+  ///
+  /// The startup message, cause, and thrown stack remain those of startup.
+  final Object? cleanupError;
+
+  final Future<void> Function() _requestStop;
+
+  /// Retries the retained backend stop request and logical route cleanup.
+  @override
+  Future<void> requestStop() => _requestStop();
 }
 
 /// An error that was thrown inside a worker and re-thrown on the host.
@@ -74,6 +108,38 @@ class SpawnPayloadMissingError extends Error {
       'SpawnPayloadMissingError: no compiled payload for "$asset" at "$url".\n'
       'Run `dart run spawn:build` in the package that owns the worker, and '
       'make sure lib/workers/build/ ships as an asset.';
+}
+
+/// A missing web payload discovered after a dedicated Worker was created.
+///
+/// Existing catches of [SpawnPayloadMissingError] continue to match. The raw
+/// Worker and its stop callback remain in custody if termination could not be
+/// requested successfully.
+class SpawnPayloadStartupException extends SpawnPayloadMissingError
+    implements SpawnStartupFailure {
+  /// Creates a payload failure retaining [termination] and [requestStop].
+  SpawnPayloadStartupException(
+    String asset,
+    String url, {
+    Object? cause,
+    required this.termination,
+    required Future<void> Function() requestStop,
+    this.cleanupError,
+  }) : _requestStop = requestStop,
+       super(asset, url, cause);
+
+  /// The backend's original termination future.
+  @override
+  final Future<WorkerTerminationEvidence> termination;
+
+  /// A failure encountered while requesting stop or cleaning up the route.
+  final Object? cleanupError;
+
+  final Future<void> Function() _requestStop;
+
+  /// Retries the retained backend stop request and logical route cleanup.
+  @override
+  Future<void> requestStop() => _requestStop();
 }
 
 /// Thrown when a `.service` entry is spawned with no provider registered for

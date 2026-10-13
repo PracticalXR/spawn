@@ -19,6 +19,8 @@ changed since the last build.
 
 Options:
   -o, --output <dir>   Where to write payloads (default: <directory>/build)
+      --target <kind>  Compiler target: js (default), wasm, or hybrid
+      --only <names>   Comma-separated worker stems to compile
       --force          Rebuild even when nothing changed
       --verbose        Print the compiler command for each file
   -h, --help           Show this text
@@ -47,8 +49,22 @@ Future<void> main(List<String> arguments) async {
           .listSync()
           .whereType<File>()
           .where((f) => f.path.endsWith('.dart'))
+          .where(
+            (f) =>
+                options.only == null || options.only!.contains(_stem(f.path)),
+          )
           .toList()
         ..sort((a, b) => a.path.compareTo(b.path));
+  if (options.only case final requested?) {
+    final missing = requested.difference(
+      entrypoints.map((f) => _stem(f.path)).toSet(),
+    );
+    if (missing.isNotEmpty) {
+      stderr.writeln('spawn:build: unknown worker(s): ${missing.join(', ')}');
+      exitCode = 1;
+      return;
+    }
+  }
 
   if (entrypoints.isEmpty) {
     stdout.writeln('spawn:build: no worker entrypoints in ${options.input}');
@@ -58,7 +74,14 @@ Future<void> main(List<String> arguments) async {
   final outputDir = Directory(options.output);
   if (!outputDir.existsSync()) outputDir.createSync(recursive: true);
 
-  final fingerprint = _fingerprintInputs(options.input);
+  final fingerprint = _mix(
+    _fingerprintInputs(options.input),
+    options.target == _Target.js
+        ? 0
+        : _hashString(
+            _wasmBootstrap('_', fallback: options.target == _Target.hybrid),
+          ),
+  );
   var failures = 0;
   var built = 0;
   var skipped = 0;
@@ -67,13 +90,34 @@ Future<void> main(List<String> arguments) async {
     final stem = _stem(entrypoint.path);
     final output = File('${options.output}/$stem.dart.js');
     final stamp = File('${options.output}/$stem.dart.js.stamp');
-    final want = _mix(fingerprint, _hashFile(entrypoint));
+    final want = _mix(
+      _mix(fingerprint, _hashFile(entrypoint)),
+      _hashString(options.target.name),
+    );
+    final fallback = File('${options.output}/$stem.dart.fallback.js');
+    final requiredOutputs = switch (options.target) {
+      _Target.js => <File>[output],
+      _Target.wasm => <File>[
+        output,
+        File('${options.output}/$stem.dart.wasm'),
+        File('${options.output}/$stem.dart.mjs'),
+      ],
+      _Target.hybrid => <File>[
+        output,
+        fallback,
+        File('${options.output}/$stem.dart.wasm'),
+        File('${options.output}/$stem.dart.mjs'),
+      ],
+    };
 
     if (!options.force &&
-        output.existsSync() &&
+        requiredOutputs.every((file) => file.existsSync()) &&
         stamp.existsSync() &&
         stamp.readAsStringSync().trim() == want.toRadixString(16)) {
-      stdout.writeln('  $stem  up to date  (${_size(output.lengthSync())})');
+      stdout.writeln(
+        '  $stem  up to date  '
+        '(${options.target.name}, ${_size(_totalSize(requiredOutputs))})',
+      );
       skipped++;
       continue;
     }
@@ -87,36 +131,94 @@ Future<void> main(List<String> arguments) async {
       continue;
     }
 
-    final command = <String>[
+    // A failed second compiler must not replace half of a previously working
+    // hybrid worker. Compile the complete set before publishing any payload.
+    final scratch = Directory.systemTemp.createTempSync('spawn-build-$stem-');
+    final wasmOutput = File('${scratch.path}/$stem.dart.wasm');
+    final stagedJs = File('${scratch.path}/$stem.dart.js');
+    final stagedFallback = File('${scratch.path}/$stem.dart.fallback.js');
+    final jsCommand = <String>[
       'compile',
       'js',
       '-O2',
       '-o',
-      output.path,
+      options.target == _Target.js ? stagedJs.path : stagedFallback.path,
       entrypoint.path,
     ];
-    if (options.verbose) {
-      stdout.writeln('  ${Platform.resolvedExecutable} ${command.join(' ')}');
-    }
-    final result = await Process.run(
-      Platform.resolvedExecutable,
-      command,
-      stdoutEncoding: utf8,
-      stderrEncoding: utf8,
-    );
-    if (result.exitCode != 0) {
-      stderr
-        ..writeln('  $stem  FAILED')
-        ..writeln(_indent('${result.stdout}'.trim()))
-        ..writeln(_indent('${result.stderr}'.trim()));
-      failures++;
-      continue;
-    }
+    final wasmCommand = <String>[
+      'compile',
+      'wasm',
+      '-O',
+      '2',
+      '--define=spawn.worker.payload=wasm',
+      '-o',
+      wasmOutput.path,
+      entrypoint.path,
+    ];
+    try {
+      var failedBuild = false;
+      for (final command in <List<String>>[
+        if (options.target != _Target.js) wasmCommand,
+        if (options.target != _Target.wasm) jsCommand,
+      ]) {
+        if (options.verbose) {
+          stdout.writeln(
+            '  ${Platform.resolvedExecutable} ${command.join(' ')}',
+          );
+        }
+        final result = await Process.run(
+          Platform.resolvedExecutable,
+          command,
+          stdoutEncoding: utf8,
+          stderrEncoding: utf8,
+        );
+        if (result.exitCode != 0) {
+          stderr
+            ..writeln('  $stem  FAILED')
+            ..writeln(_indent('${result.stdout}'.trim()))
+            ..writeln(_indent('${result.stderr}'.trim()));
+          failures++;
+          failedBuild = true;
+          break;
+        }
+      }
+      if (failedBuild) continue;
 
-    stamp.writeAsStringSync(want.toRadixString(16));
+      if (options.target != _Target.js) {
+        // The stable classic-worker URL boots Wasm and queues messages until
+        // Dart installs onmessage. Publish it last, after its companions.
+        stagedJs.writeAsStringSync(
+          _wasmBootstrap(stem, fallback: options.target == _Target.hybrid),
+        );
+      }
+
+      // A missing stamp forces a rebuild after an interrupted publication.
+      if (stamp.existsSync()) stamp.deleteSync();
+      final stagedFiles = scratch.listSync().whereType<File>().toList();
+      for (final staged in stagedFiles.where(
+        (file) => file.path != stagedJs.path,
+      )) {
+        staged.copySync('${options.output}/${_fileName(staged.path)}');
+      }
+      stagedJs.copySync(output.path);
+      stamp.writeAsStringSync(want.toRadixString(16));
+    } finally {
+      // The temp directory was created directly beneath systemTemp. Check its
+      // resolved parent before any recursive cleanup on Windows.
+      if (scratch.parent.resolveSymbolicLinksSync() ==
+          Directory.systemTemp.resolveSymbolicLinksSync()) {
+        scratch.deleteSync(recursive: true);
+      } else {
+        stderr.writeln('spawn: left unexpected scratch path ${scratch.path}');
+        failures++;
+      }
+    }
     // dart2js also emits a source map and a deferred-parts manifest; leave
     // them next to the payload, they are only fetched when asked for.
-    stdout.writeln('  $stem  built  (${_size(output.lengthSync())})');
+    stdout.writeln(
+      '  $stem  built  '
+      '(${options.target.name}, ${_size(_totalSize(requiredOutputs))})',
+    );
     built++;
   }
 
@@ -128,11 +230,21 @@ Future<void> main(List<String> arguments) async {
 }
 
 class _Options {
-  _Options(this.input, this.output, this.force, this.verbose, this.help);
+  _Options(
+    this.input,
+    this.output,
+    this.target,
+    this.only,
+    this.force,
+    this.verbose,
+    this.help,
+  );
 
   factory _Options.parse(List<String> arguments) {
     var input = 'lib/workers';
     String? output;
+    var target = _Target.js;
+    Set<String>? only;
     var force = false;
     var verbose = false;
     var help = false;
@@ -148,12 +260,24 @@ class _Options {
           force = true;
         case '--verbose':
           verbose = true;
+        case '--target':
+          if (i + 1 < arguments.length) {
+            target = _parseTarget(arguments[++i]);
+          }
+        case '--only':
+          if (i + 1 < arguments.length) {
+            only = arguments[++i].split(',').toSet();
+          }
         case '-o':
         case '--output':
           if (i + 1 < arguments.length) output = arguments[++i];
         default:
           if (argument.startsWith('--output=')) {
             output = argument.substring('--output='.length);
+          } else if (argument.startsWith('--target=')) {
+            target = _parseTarget(argument.substring('--target='.length));
+          } else if (argument.startsWith('--only=')) {
+            only = argument.substring('--only='.length).split(',').toSet();
           } else if (!argument.startsWith('-') && !sawInput) {
             input = argument;
             sawInput = true;
@@ -167,6 +291,8 @@ class _Options {
     return _Options(
       input,
       (output ?? '$input/build').replaceAll(r'\', '/'),
+      target,
+      only,
       force,
       verbose,
       help,
@@ -175,10 +301,21 @@ class _Options {
 
   final String input;
   final String output;
+  final _Target target;
+  final Set<String>? only;
   final bool force;
   final bool verbose;
   final bool help;
 }
+
+enum _Target { js, wasm, hybrid }
+
+_Target _parseTarget(String value) => switch (value) {
+  'js' => _Target.js,
+  'wasm' => _Target.wasm,
+  'hybrid' => _Target.hybrid,
+  _ => throw ArgumentError.value(value, 'target', 'Must be js, wasm or hybrid'),
+};
 
 String _stem(String path) {
   final normalized = path.replaceAll(r'\', '/');
@@ -186,6 +323,8 @@ String _stem(String path) {
   final name = slash < 0 ? normalized : normalized.substring(slash + 1);
   return name.substring(0, name.length - '.dart'.length);
 }
+
+String _fileName(String path) => path.replaceAll(r'\', '/').split('/').last;
 
 bool _declaresMain(File file) => RegExp(
   r'^\s*(void|Future<void>|Never)?\s*main\s*\(',
@@ -291,6 +430,95 @@ int _hashFile(File file) {
 }
 
 int _mix(int a, int b) => ((a ^ b) * 0x01000193) & 0xFFFFFFFF;
+
+int _hashString(String value) {
+  var hash = 0x811C9DC5;
+  for (final byte in utf8.encode(value)) {
+    hash = ((hash ^ byte) * 0x01000193) & 0xFFFFFFFF;
+  }
+  return hash;
+}
+
+int _totalSize(Iterable<File> files) => files.fold<int>(
+  0,
+  (total, file) => total + (file.existsSync() ? file.lengthSync() : 0),
+);
+
+String _wasmBootstrap(String stem, {bool fallback = false}) =>
+    '''
+// Generated by spawn:build --target ${fallback ? 'hybrid' : 'wasm'}. Do not edit.
+(() => {
+  const pending = [];
+  let dartOnMessage = null;
+
+  self.onmessage = (event) => {
+    if (dartOnMessage === null) {
+      pending.push(event);
+    } else {
+      dartOnMessage(event);
+    }
+  };
+
+  async function boot() {
+    ${fallback ? '''
+    // Probe the GC and SIMD features emitted by dart2wasm before fetching a
+    // large payload. A failed probe goes straight to the compiled JS worker.
+    if (typeof WebAssembly === 'undefined' ||
+        !WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,95,1,120,0])) ||
+        !WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,123,3,2,1,0,10,10,1,8,0,65,0,253,15,253,98,11]))) {
+      throw new Error('spawn: Dart Wasm worker features unavailable');
+    }
+    ''' : ''}
+    const loader = await import('./$stem.dart.mjs');
+    const response = await fetch('./$stem.dart.wasm');
+    if (!response.ok) {
+      throw new Error(
+        `spawn: failed to fetch Wasm worker payload (\${response.status})`,
+      );
+    }
+
+    let compiled;
+    try {
+      compiled = await loader.compileStreaming(Promise.resolve(response.clone()));
+    } catch (_) {
+      // Servers should send application/wasm. Falling back to bytes keeps
+      // local and embedded asset servers usable without weakening the worker
+      // boundary.
+      compiled = await loader.compile(await response.arrayBuffer());
+    }
+    const app = await compiled.instantiate({});
+    app.invokeMain();
+
+    dartOnMessage = self.onmessage;
+    if (typeof dartOnMessage !== 'function') {
+      throw new Error('spawn: Wasm worker did not install an onmessage handler');
+    }
+    for (const event of pending.splice(0)) dartOnMessage(event);
+  }
+
+  boot().catch((error) => {
+    ${fallback ? '''
+    try {
+      // The JS payload is a separate compilation of this worker. It installs
+      // its own onmessage handler; replay messages queued while Wasm started.
+      importScripts('./$stem.dart.fallback.js');
+      dartOnMessage = self.onmessage;
+      if (typeof dartOnMessage !== 'function') {
+        throw new Error('spawn: JS fallback did not install an onmessage handler');
+      }
+      for (const event of pending.splice(0)) dartOnMessage(event);
+      return;
+    } catch (fallbackError) {
+      error = fallbackError;
+    }
+    ''' : ''}
+    // A thrown worker error reaches Worker.onerror, which spawn reports as a
+    // payload startup failure. An unhandled rejected Promise does not do so
+    // consistently across browsers.
+    setTimeout(() => { throw error; }, 0);
+  });
+})();
+''';
 
 String _size(int bytes) => bytes < 1024
     ? '$bytes B'

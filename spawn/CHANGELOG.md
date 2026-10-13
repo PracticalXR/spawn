@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.2-WIP
+
+- Nested browser workers inherit the application's asset base at startup, so
+  packaged workers do not resolve under another worker's payload directory.
+  Rebuild callers and nested worker payloads together to use this correction.
+- Web dictionaries preserve prototype-bearing keys and escape opaque-wrapper
+  marker collisions. Decoding uses the intrinsic value brand, so an ordinary
+  `constructor` entry cannot spoof an array or typed buffer. Rebuild and deploy
+  host and worker payloads together; older decoders cannot unwrap exceptional
+  marker-bearing dictionaries.
+- `SpawnCaps.isolated` distinguishes a real isolate/Web Worker from in-process
+  execution, so worker cleanup can respect ownership of global resources.
+  Local/debug fallback and older peers conservatively report false.
+- `spawn:build --target hybrid` packages a Dart WasmGC worker and a separately
+  compiled JavaScript worker behind one entry URL. The bootstrap probes required
+  Wasm features and falls back to JS when startup fails, including older iOS
+  browsers. Wasm-only and JS-only targets remain available.
+- `spawn:build --target wasm` now produces Dart WasmGC Web Workers behind the
+  same `.dart.js` asset URL used by existing `SpawnEntry` declarations. The
+  bootstrap queues startup messages, falls back when a server omits the Wasm
+  MIME type, and workers report `SpawnPayload.wasm` in their capabilities.
+
 ## 0.1.1
 
 Three ways a message could go missing, and the response direction learning to

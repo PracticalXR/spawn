@@ -3,7 +3,10 @@ import 'dart:async';
 import '../caps.dart';
 import '../channel.dart';
 import '../entry.dart';
+import '../frame.dart';
 import '../service.dart';
+import '../termination.dart';
+import '../transport.dart';
 import '../worker.dart';
 import 'loopback.dart';
 
@@ -27,7 +30,12 @@ Future<Worker> connectLocal(
     );
   }
   final pair = LoopbackPair();
-  final pending = createWorker(entry, pair.host, timeout, grant: grant);
+  final pending = createWorker(
+    entry,
+    _LocalHostTransport(pair.host),
+    timeout,
+    grant: grant,
+  );
   unawaited(
     Future<void>.microtask(() async {
       await runHandlerOn(pair.worker, handler, message, caps);
@@ -38,4 +46,30 @@ Future<Worker> connectLocal(
     }),
   );
   return pending;
+}
+
+/// Adds positive absence of a dedicated actor only to the local host end.
+class _LocalHostTransport
+    implements WorkerTransport, WorkerTerminationTransport {
+  _LocalHostTransport(this._transport);
+
+  final WorkerTransport _transport;
+
+  @override
+  final Future<WorkerTerminationEvidence> termination =
+      Future<WorkerTerminationEvidence>.value(
+        WorkerTerminationEvidence.notStarted,
+      );
+
+  @override
+  Stream<Frame> get incoming => _transport.incoming;
+
+  @override
+  Future<void> get done => _transport.done;
+
+  @override
+  void send(Frame frame) => _transport.send(frame);
+
+  @override
+  Future<void> kill() => _transport.kill();
 }

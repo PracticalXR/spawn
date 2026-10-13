@@ -80,19 +80,20 @@ void main() {
       expect(await worker.request<String>('ping'), 'ping');
     });
 
-    test('starts and reports a js payload', () async {
+    test('starts and reports a wasm payload', () async {
       final worker = await spawn(realEntry);
       addTearDown(() => worker.close(force: true));
       expect(worker.caps.hosted, SpawnHost.dart);
-      expect(worker.caps.payload, SpawnPayload.js);
+      expect(worker.caps.payload, SpawnPayload.wasm);
       expect(worker.caps.zeroCopyTransfer, isTrue);
+      expect(worker.caps.isolated, isTrue);
     });
 
     test('answers requests', () async {
       final worker = await spawn(realEntry);
       addTearDown(() => worker.close(force: true));
       expect(await worker.request<String>('ping'), 'ping');
-      expect(await worker.request<String>('payload'), 'js');
+      expect(await worker.request<String>('payload'), 'wasm');
     });
 
     test('carries portable values both ways', () async {
@@ -134,6 +135,20 @@ void main() {
         'count': 3,
         'nested': <Object?>[1, null, 'two'],
       });
+    });
+
+    test('dictionary keys cannot become prototypes or opaque wrappers', () async {
+      final value = <String, Object?>{
+        '__proto__': <String, Object?>{'nested': 'ordinary data'},
+        'constructor': <String, Object?>{'name': 'Uint8Array'},
+        r'$spawn$platform': <String, Object?>{'value': 17},
+        r'$spawn$map': <String, Object?>{'constructor': 'Array'},
+        'toString': Uint8List.fromList([3, 7, 11]),
+      };
+      final worker = await spawn(realEntry, message: value);
+      addTearDown(() => worker.close(force: true));
+      expect(await worker.request<Object?>('initial'), value);
+      expect(await worker.request<Object?>(value), value);
     });
 
     test('a WireMessage decodes on the other side', () async {
@@ -317,6 +332,7 @@ void main() {
       // It works, but it says so: nothing was transferred and nothing ran in
       // parallel.
       expect(worker.caps.zeroCopyTransfer, isFalse);
+      expect(worker.caps.isolated, isFalse);
       expect(await worker.request<String>('ping'), 'ping');
     });
   });
