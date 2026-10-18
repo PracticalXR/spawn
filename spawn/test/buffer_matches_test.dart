@@ -19,15 +19,18 @@ import 'package:spawn/src/payload.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('a typed list matches its own buffer across separate .buffer reads',
-      () {
+  test('a typed list matches its own buffer across separate .buffer reads', () {
     final u = Uint8List(16);
     // The exact shape every caller produces: the transfer list is built from
     // one `.buffer` read, the match runs against another.
     final transferEntry = u.buffer;
-    expect(bufferMatches(u, transferEntry), isTrue,
-        reason: 'identical() is false for these on the VM — the wrapper is '
-            'fresh per access; == compares the backing store');
+    expect(
+      bufferMatches(u, transferEntry),
+      isTrue,
+      reason:
+          'identical() is false for these on the VM — the wrapper is '
+          'fresh per access; == compares the backing store',
+    );
     expect(bufferMatches(transferEntry, u), isTrue);
   });
 
@@ -36,7 +39,10 @@ void main() {
     final view = Uint8List.view(u.buffer, 8, 8);
     expect(bufferMatches(view, u.buffer), isTrue);
     expect(bufferMatches(view, u), isTrue);
-    expect(bufferMatches(Uint8List(32), u.buffer), isFalse,
-        reason: 'equal content is not the same buffer');
+    expect(
+      bufferMatches(Uint8List(32), u.buffer),
+      isFalse,
+      reason: 'equal content is not the same buffer',
+    );
   });
 }

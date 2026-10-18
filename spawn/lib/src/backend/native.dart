@@ -171,8 +171,7 @@ class _NativeFrame {
       if (transferShape == 3 || transferShape == 4) {
         // Shapes 3/4: reassemble the Map around the moved buffer.
         final map = Map<Object?, Object?>.of(payload! as Map);
-        map[transferKey] =
-            transferShape == 4 ? buffer : buffer.asUint8List();
+        map[transferKey] = transferShape == 4 ? buffer : buffer.asUint8List();
         value = map;
       } else {
         value = transferShape == 2 ? buffer : buffer.asUint8List();

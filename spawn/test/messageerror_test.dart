@@ -25,65 +25,82 @@ Future<void> _settle([int turns = 6]) async {
 }
 
 Frame _dataClone() => Frame(
-      WireKind.error,
-      payload: encodeErrorPayload(
-        'DataCloneError',
-        'a message from the host could not be deserialized by the worker',
-        '',
-      ),
-    );
+  WireKind.error,
+  payload: encodeErrorPayload(
+    'DataCloneError',
+    'a message from the host could not be deserialized by the worker',
+    '',
+  ),
+);
 
 void main() {
-  test('🔴 fails every request in flight with the reason and KEEPS the worker',
-      () async {
-    final pair = LoopbackPair();
-    var echo = false;
-    pair.worker.incoming.listen((f) {
-      if (echo && f.kind == WireKind.request) {
-        pair.worker.send(
-          Frame(
-            WireKind.response,
-            typeId: f.typeId,
-            correlationId: f.correlationId,
-            payload: f.payload,
+  test(
+    '🔴 fails every request in flight with the reason and KEEPS the worker',
+    () async {
+      final pair = LoopbackPair();
+      var echo = false;
+      pair.worker.incoming.listen((f) {
+        if (echo && f.kind == WireKind.request) {
+          pair.worker.send(
+            Frame(
+              WireKind.response,
+              typeId: f.typeId,
+              correlationId: f.correlationId,
+              payload: f.payload,
+            ),
+          );
+        }
+      });
+      pair.worker.send(const Frame(WireKind.hello));
+      final worker = await createWorker(
+        echoEntry,
+        pair.host,
+        const Duration(seconds: 1),
+      );
+      addTearDown(() => worker.close(force: true));
+
+      // Two requests in flight — the report cannot say which one, so both
+      // must fail, with the reason.
+      final a = worker.request<Object?>(
+        'a',
+        timeout: const Duration(seconds: 5),
+      );
+      final b = worker.request<Object?>(
+        'b',
+        timeout: const Duration(seconds: 5),
+      );
+      await _settle();
+      pair.worker.send(_dataClone());
+      for (final pending in [a, b]) {
+        await expectLater(
+          pending,
+          throwsA(
+            isA<RemoteWorkerError>().having(
+              (e) => e.remoteType,
+              'remoteType',
+              'DataCloneError',
+            ),
           ),
         );
       }
-    });
-    pair.worker.send(const Frame(WireKind.hello));
-    final worker =
-        await createWorker(echoEntry, pair.host, const Duration(seconds: 1));
-    addTearDown(() => worker.close(force: true));
-
-    // Two requests in flight — the report cannot say which one, so both
-    // must fail, with the reason.
-    final a = worker.request<Object?>('a', timeout: const Duration(seconds: 5));
-    final b = worker.request<Object?>('b', timeout: const Duration(seconds: 5));
-    await _settle();
-    pair.worker.send(_dataClone());
-    for (final pending in [a, b]) {
-      await expectLater(
-        pending,
-        throwsA(
-          isA<RemoteWorkerError>()
-              .having((e) => e.remoteType, 'remoteType', 'DataCloneError'),
-        ),
+      // The worker is alive: the next portable message is answered as usual.
+      expect(worker.isClosed, isFalse);
+      echo = true;
+      expect(
+        await worker.request<Object?>('c', timeout: const Duration(seconds: 1)),
+        'c',
       );
-    }
-    // The worker is alive: the next portable message is answered as usual.
-    expect(worker.isClosed, isFalse);
-    echo = true;
-    expect(
-      await worker.request<Object?>('c', timeout: const Duration(seconds: 1)),
-      'c',
-    );
-  });
+    },
+  );
 
   test('with nothing in flight the report reaches the events stream', () async {
     final pair = LoopbackPair();
     pair.worker.send(const Frame(WireKind.hello));
-    final worker =
-        await createWorker(echoEntry, pair.host, const Duration(seconds: 1));
+    final worker = await createWorker(
+      echoEntry,
+      pair.host,
+      const Duration(seconds: 1),
+    );
     addTearDown(() => worker.close(force: true));
     final errors = <Object>[];
     final sub = worker.events.listen((_) {}, onError: errors.add);
@@ -98,8 +115,11 @@ void main() {
   test('any other correlation-less error is still fatal', () async {
     final pair = LoopbackPair();
     pair.worker.send(const Frame(WireKind.hello));
-    final worker =
-        await createWorker(echoEntry, pair.host, const Duration(seconds: 1));
+    final worker = await createWorker(
+      echoEntry,
+      pair.host,
+      const Duration(seconds: 1),
+    );
     addTearDown(() => worker.close(force: true));
     final sub = worker.events.listen((_) {}, onError: (_) {});
     addTearDown(sub.cancel);

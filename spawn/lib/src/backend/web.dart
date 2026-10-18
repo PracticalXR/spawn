@@ -650,26 +650,34 @@ class _TransferredBuffers {
     final views = _views ??= Map<TypedData, JSObject>.identity();
     return views.putIfAbsent(source, () {
       final offset = source.offsetInBytes;
-      if (source is Uint8List)
+      if (source is Uint8List) {
         return JSUint8Array(buffer, offset, source.length);
+      }
       if (source is Int8List) return JSInt8Array(buffer, offset, source.length);
       if (source is Uint8ClampedList) {
         return JSUint8ClampedArray(buffer, offset, source.length);
       }
-      if (source is Int16List)
+      if (source is Int16List) {
         return JSInt16Array(buffer, offset, source.length);
-      if (source is Uint16List)
+      }
+      if (source is Uint16List) {
         return JSUint16Array(buffer, offset, source.length);
-      if (source is Int32List)
+      }
+      if (source is Int32List) {
         return JSInt32Array(buffer, offset, source.length);
-      if (source is Uint32List)
+      }
+      if (source is Uint32List) {
         return JSUint32Array(buffer, offset, source.length);
-      if (source is Float32List)
+      }
+      if (source is Float32List) {
         return JSFloat32Array(buffer, offset, source.length);
-      if (source is Float64List)
+      }
+      if (source is Float64List) {
         return JSFloat64Array(buffer, offset, source.length);
-      if (source is ByteData)
+      }
+      if (source is ByteData) {
         return JSDataView(buffer, offset, source.lengthInBytes);
+      }
       throw ArgumentError.value(
         source,
         'message',
@@ -742,8 +750,7 @@ const String _mapMarker = r'$spawn$map';
 /// `DataCloneError`, so the two things a `PlatformValue` normally does are
 /// exactly inverted here. There is nothing for the caller to opt into: moving
 /// shared memory is never what anyone means.
-bool _isSharedMemory(JSAny value) =>
-    _valueBrand(value) == 'SharedArrayBuffer';
+bool _isSharedMemory(JSAny value) => _valueBrand(value) == 'SharedArrayBuffer';
 
 JSAny? _toJs(
   Object? value,

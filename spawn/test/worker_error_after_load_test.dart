@@ -37,58 +37,78 @@ Future<void> _settle([int turns = 12]) async {
   }
 }
 
-const String _why = 'the worker threw an uncaught error: '
+const String _why =
+    'the worker threw an uncaught error: '
     "NoSuchMethodError: method not found: '\$1' (line 2472)";
 
-Frame _uncaught() => Frame(
-      WireKind.error,
-      payload: encodeErrorPayload('WorkerError', _why, ''),
-    );
+Frame _uncaught() =>
+    Frame(WireKind.error, payload: encodeErrorPayload('WorkerError', _why, ''));
 
 void main() {
-  test('🔴 a request in flight FAILS instead of waiting for its timeout',
-      () async {
-    final pair = LoopbackPair();
-    // The worker answers nothing, which is the whole point: before the fix
-    // the only thing that ever completed this request was the timeout.
-    pair.worker.incoming.listen((_) {});
-    pair.worker.send(const Frame(WireKind.hello));
-    final worker =
-        await createWorker(echoEntry, pair.host, const Duration(seconds: 1));
-    addTearDown(() => worker.close(force: true));
+  test(
+    '🔴 a request in flight FAILS instead of waiting for its timeout',
+    () async {
+      final pair = LoopbackPair();
+      // The worker answers nothing, which is the whole point: before the fix
+      // the only thing that ever completed this request was the timeout.
+      pair.worker.incoming.listen((_) {});
+      pair.worker.send(const Frame(WireKind.hello));
+      final worker = await createWorker(
+        echoEntry,
+        pair.host,
+        const Duration(seconds: 1),
+      );
+      addTearDown(() => worker.close(force: true));
 
-    final events = <Object>[];
-    final sub = worker.events.listen((_) {}, onError: events.add);
-    addTearDown(sub.cancel);
+      final events = <Object>[];
+      final sub = worker.events.listen((_) {}, onError: events.add);
+      addTearDown(sub.cancel);
 
-    // A minute of budget, so a passing test cannot be the timeout in
-    // disguise — the request must be finished by the report, not by the clock.
-    final pending =
-        worker.request<Object?>('a', timeout: const Duration(seconds: 60));
-    await _settle();
-    pair.worker.send(_uncaught());
+      // A minute of budget, so a passing test cannot be the timeout in
+      // disguise — the request must be finished by the report, not by the clock.
+      final pending = worker.request<Object?>(
+        'a',
+        timeout: const Duration(seconds: 60),
+      );
+      await _settle();
+      pair.worker.send(_uncaught());
 
-    // ...WITH the reason — the browser's text, not "timed out" — and the
-    // worker is KEPT: an uncaught throw inside one handler is one lost
-    // request, not a dead worker (worker.dart treats 'WorkerError' like a
-    // clone failure since 2026-09-01).
-    await expectLater(
+      // ...WITH the reason — the browser's text, not "timed out" — and the
+      // worker is KEPT: an uncaught throw inside one handler is one lost
+      // request, not a dead worker (worker.dart treats 'WorkerError' like a
+      // clone failure since 2026-09-01).
+      await expectLater(
         pending,
-        throwsA(isA<RemoteWorkerError>()
-            .having((e) => e.remoteType, 'remoteType', 'WorkerError')
-            .having((e) => e.message, 'message', contains('uncaught error'))
-            .having((e) => e.message, 'message', contains('method not found'))));
-    expect(worker.error, isNull, reason: 'the worker must stay alive');
-    expect(events, isEmpty,
-        reason: 'the report went to the request that was in flight, not to '
-            'the events stream');
-  });
+        throwsA(
+          isA<RemoteWorkerError>()
+              .having((e) => e.remoteType, 'remoteType', 'WorkerError')
+              .having((e) => e.message, 'message', contains('uncaught error'))
+              .having(
+                (e) => e.message,
+                'message',
+                contains('method not found'),
+              ),
+        ),
+      );
+      expect(worker.error, isNull, reason: 'the worker must stay alive');
+      expect(
+        events,
+        isEmpty,
+        reason:
+            'the report went to the request that was in flight, not to '
+            'the events stream',
+      );
+    },
+  );
 
   test('with nothing in flight it still reaches the events stream', () async {
     final pair = LoopbackPair();
     pair.worker.send(const Frame(WireKind.hello));
-    final worker =
-        await createWorker(echoEntry, pair.host, const Duration(seconds: 1));
+    final worker = await createWorker(
+      echoEntry,
+      pair.host,
+      const Duration(seconds: 1),
+    );
     addTearDown(() => worker.close(force: true));
     final errors = <Object>[];
     final sub = worker.events.listen((_) {}, onError: errors.add);
@@ -107,22 +127,35 @@ void main() {
     final src = File('lib/src/backend/web.dart').readAsStringSync();
     final at = src.indexOf('_worker.onerror = ');
     expect(at, isNonNegative);
-    final body = src.substring(at, src.indexOf('_worker.onmessageerror = ', at));
+    final body = src.substring(
+      at,
+      src.indexOf('_worker.onmessageerror = ', at),
+    );
     expect(
-      body.contains('if (_loaded.isCompleted || _loadFailure.isCompleted) '
-          'return;'),
+      body.contains(
+        'if (_loaded.isCompleted || _loadFailure.isCompleted) '
+        'return;',
+      ),
       isFalse,
-      reason: 'that early return is the bug: it dropped every error a live '
+      reason:
+          'that early return is the bug: it dropped every error a live '
           'worker reported',
     );
-    expect(body, contains('_loadFailure.complete(_describeErrorEvent(event));'),
-        reason: 'a worker that will not START is still a load failure');
+    expect(
+      body,
+      contains('_loadFailure.complete(_describeErrorEvent(event));'),
+      reason: 'a worker that will not START is still a load failure',
+    );
     expect(body, contains('_incoming.add('));
     expect(body, contains("'WorkerError',"));
     expect(body, contains('_describeErrorEvent(event)'));
-    expect(body, isNot(contains('terminate()')),
-        reason: 'an ErrorEvent is a fact about one callback; the worker is '
-            'not killed from inside the handler',
+    expect(
+      body,
+      isNot(contains('terminate()')),
+      reason:
+          'an ErrorEvent is a fact about one callback; the worker is '
+          'not killed from inside the handler',
     );
-  });
+    // Reads the source with dart:io, which a browser run does not have.
+  }, testOn: 'vm');
 }

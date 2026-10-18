@@ -28,42 +28,47 @@ Future<void> replyWorker(WorkerChannel channel) async {
 const _entry = SpawnEntry.inline(replyWorker, asset: 'test/reply_worker');
 
 void main() {
-  test('a SpawnReply is unwrapped: the requester sees the inner value',
-      () async {
-    final w = await spawnLocal(_entry);
-    addTearDown(w.close);
+  test(
+    'a SpawnReply is unwrapped: the requester sees the inner value',
+    () async {
+      final w = await spawnLocal(_entry);
+      addTearDown(w.close);
 
-    final got = await w.request('wrapped') as Map;
-    expect(got['kind'], 'wrapped');
-    final rgba = got['rgba'] as Uint8List;
-    expect(rgba.length, 64);
-    expect(rgba[0], 0xAB,
-        reason: 'the bytes must survive the move intact — a detached or '
+      final got = await w.request<Object?>('wrapped') as Map;
+      expect(got['kind'], 'wrapped');
+      final rgba = got['rgba'] as Uint8List;
+      expect(rgba.length, 64);
+      expect(
+        rgba[0],
+        0xAB,
+        reason:
+            'the bytes must survive the move intact — a detached or '
             'zeroed buffer here means the transfer list and the value '
-            'referenced different buffers');
-  });
+            'referenced different buffers',
+      );
+    },
+  );
 
   test('a plain return value is untouched (the additive half)', () async {
     final w = await spawnLocal(_entry);
     addTearDown(w.close);
-    final got = await w.request('plain') as Map;
+    final got = await w.request<Object?>('plain') as Map;
     expect(got, {'kind': 'plain', 'n': 7});
   });
 
-  test('a malformed transfer list is refused at the reply, not sent',
-      () async {
+  test('a malformed transfer list is refused at the reply, not sent', () async {
     // checkTransfer applies to replies exactly as it does to send(): an
     // untransferable entry surfaces as the request's error rather than
     // vanishing downstream.
-    final w = await spawnLocal(SpawnEntry.inline(
-      (channel) async {
+    final w = await spawnLocal(
+      SpawnEntry.inline((channel) async {
         channel.handleRequests(
-            (_) => SpawnReply('x', transfer: [DateTime.now()]));
+          (_) => SpawnReply('x', transfer: [DateTime.now()]),
+        );
         await channel.onClose;
-      },
-      asset: 'test/bad_reply_worker',
-    ));
+      }, asset: 'test/bad_reply_worker'),
+    );
     addTearDown(w.close);
-    await expectLater(w.request('go'), throwsA(anything));
+    await expectLater(w.request<Object?>('go'), throwsA(anything));
   });
 }

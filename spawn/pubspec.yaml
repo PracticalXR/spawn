@@ -1,7 +1,7 @@
 name: spawn
 description: Background execution for Dart that works everywhere - isolates on native, Web Workers on the web, one API. The missing web half of dart:isolate.
-version: 0.1.1
-repository: https://github.com/PracticalXR/spawn/tree/main/spawn
+version: 0.1.2
+repository: https://github.com/PracticalXR/spawn/tree/master/spawn
 
 topics:
   - isolates

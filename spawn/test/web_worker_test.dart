@@ -137,19 +137,22 @@ void main() {
       });
     });
 
-    test('dictionary keys cannot become prototypes or opaque wrappers', () async {
-      final value = <String, Object?>{
-        '__proto__': <String, Object?>{'nested': 'ordinary data'},
-        'constructor': <String, Object?>{'name': 'Uint8Array'},
-        r'$spawn$platform': <String, Object?>{'value': 17},
-        r'$spawn$map': <String, Object?>{'constructor': 'Array'},
-        'toString': Uint8List.fromList([3, 7, 11]),
-      };
-      final worker = await spawn(realEntry, message: value);
-      addTearDown(() => worker.close(force: true));
-      expect(await worker.request<Object?>('initial'), value);
-      expect(await worker.request<Object?>(value), value);
-    });
+    test(
+      'dictionary keys cannot become prototypes or opaque wrappers',
+      () async {
+        final value = <String, Object?>{
+          '__proto__': <String, Object?>{'nested': 'ordinary data'},
+          'constructor': <String, Object?>{'name': 'Uint8Array'},
+          r'$spawn$platform': <String, Object?>{'value': 17},
+          r'$spawn$map': <String, Object?>{'constructor': 'Array'},
+          'toString': Uint8List.fromList([3, 7, 11]),
+        };
+        final worker = await spawn(realEntry, message: value);
+        addTearDown(() => worker.close(force: true));
+        expect(await worker.request<Object?>('initial'), value);
+        expect(await worker.request<Object?>(value), value);
+      },
+    );
 
     test('a WireMessage decodes on the other side', () async {
       final worker = await spawn(realEntry);

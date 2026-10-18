@@ -41,8 +41,7 @@ void main() {
         attempt = spawn(entry, timeout: const Duration(seconds: 1))
             .then<_SpawnOutcome>(
               _SpawnOutcome.started,
-              onError: (Object error, StackTrace stack) =>
-                  _SpawnOutcome.failed(error, stack),
+              onError: _SpawnOutcome.failed,
             );
 
         await _awaitSignaled(api, enteredGate);
@@ -67,8 +66,10 @@ void main() {
         final firstStop = failure.requestStop();
         final secondStop = failure.requestStop();
         expect(identical(firstStop, secondStop), isTrue);
-        await Future.wait(<Future<void>>[firstStop, secondStop])
-            .timeout(const Duration(seconds: 1));
+        await Future.wait(<Future<void>>[
+          firstStop,
+          secondStop,
+        ]).timeout(const Duration(seconds: 1));
         await expectLater(
           receipt.timeout(const Duration(milliseconds: 25)),
           throwsA(isA<TimeoutException>()),
@@ -147,7 +148,7 @@ void main() {
         failure = error;
       }
       expect(failure, isNotNull);
-      expect(failure!.cause, isNotNull);
+      expect(failure.cause, isNotNull);
       expect(
         await failure.termination.timeout(const Duration(seconds: 5)),
         WorkerTerminationEvidence.notStarted,
@@ -222,34 +223,18 @@ Future<void> _awaitSignaled(_WindowsEvents api, Pointer<Void> event) async {
   expect(api.waitForSingleObject(event, 0), 0);
 }
 
-typedef _CreateEventNative = Pointer<Void> Function(
-  Pointer<Void>,
-  Int32,
-  Int32,
-  Pointer<Uint16>,
-);
-typedef _CreateEventDart = Pointer<Void> Function(
-  Pointer<Void>,
-  int,
-  int,
-  Pointer<Uint16>,
-);
+typedef _CreateEventNative =
+    Pointer<Void> Function(Pointer<Void>, Int32, Int32, Pointer<Uint16>);
+typedef _CreateEventDart =
+    Pointer<Void> Function(Pointer<Void>, int, int, Pointer<Uint16>);
 typedef _HandleOperationNative = Int32 Function(Pointer<Void>);
 typedef _HandleOperationDart = int Function(Pointer<Void>);
 typedef _WaitNative = Uint32 Function(Pointer<Void>, Uint32);
 typedef _WaitDart = int Function(Pointer<Void>, int);
-typedef _SignalAndWaitNative = Uint32 Function(
-  Pointer<Void>,
-  Pointer<Void>,
-  Uint32,
-  Int32,
-);
-typedef _SignalAndWaitDart = int Function(
-  Pointer<Void>,
-  Pointer<Void>,
-  int,
-  int,
-);
+typedef _SignalAndWaitNative =
+    Uint32 Function(Pointer<Void>, Pointer<Void>, Uint32, Int32);
+typedef _SignalAndWaitDart =
+    int Function(Pointer<Void>, Pointer<Void>, int, int);
 
 class _WindowsEvents {
   _WindowsEvents() {
