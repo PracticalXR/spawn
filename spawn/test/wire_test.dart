@@ -177,6 +177,7 @@ void main() {
         hosted: SpawnHost.dart,
         payload: SpawnPayload.js,
         zeroCopyTransfer: true,
+        isolated: true,
       );
       final decoded = SpawnCaps.fromJson(
         decodeHelloPayload(encodeHelloPayload(caps.toJson())),
@@ -184,6 +185,7 @@ void main() {
       expect(decoded.hosted, SpawnHost.dart);
       expect(decoded.payload, SpawnPayload.js);
       expect(decoded.zeroCopyTransfer, isTrue);
+      expect(decoded.isolated, isTrue);
     });
 
     test('caps from an unknown future value fall back instead of throwing', () {
@@ -194,6 +196,7 @@ void main() {
       });
       expect(caps.hosted, SpawnHost.dart);
       expect(caps.payload, SpawnPayload.aot);
+      expect(caps.isolated, isFalse);
     });
 
     test('error round-trips type, message and stack', () {

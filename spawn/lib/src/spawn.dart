@@ -6,6 +6,7 @@ import 'caps.dart';
 import 'entry.dart';
 import 'errors.dart';
 import 'service.dart';
+import 'termination.dart';
 import 'worker.dart';
 
 /// How long `spawn` waits for a worker to report for duty.
@@ -99,8 +100,42 @@ Future<Worker> _start(
       : await SpawnServices.acquire(service, entry);
   try {
     return await connector(grant);
-  } on Object {
-    await grant?.release();
+  } on Object catch (error, stack) {
+    try {
+      await grant?.release();
+    } on Object catch (cleanup) {
+      // Service cleanup must not replace the failure retaining a dedicated
+      // worker's handle and termination receipt.
+      if (error is SpawnStartupException) {
+        Error.throwWithStackTrace(
+          SpawnStartupException(
+            error.message,
+            cause: error.cause,
+            termination: error.termination,
+            requestStop: error.requestStop,
+            cleanupError: error.cleanupError ?? cleanup,
+          ),
+          stack,
+        );
+      }
+      if (error is SpawnPayloadStartupException) {
+        Error.throwWithStackTrace(
+          SpawnPayloadStartupException(
+            error.asset,
+            error.url,
+            cause: error.cause,
+            termination: error.termination,
+            requestStop: error.requestStop,
+            cleanupError: error.cleanupError ?? cleanup,
+          ),
+          stack,
+        );
+      }
+      if (error is SpawnStartupFailure) {
+        Error.throwWithStackTrace(error, stack);
+      }
+      Error.throwWithStackTrace(error, stack);
+    }
     rethrow;
   }
 }

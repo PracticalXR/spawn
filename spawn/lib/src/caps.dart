@@ -19,7 +19,8 @@ enum SpawnPayload {
   /// A `dart compile js` payload, produced by `dart run spawn:build`.
   js,
 
-  /// A `dart compile wasm` payload. Reserved.
+  /// A `dart compile wasm` payload, produced by
+  /// `dart run spawn:build --target wasm`.
   wasm,
 }
 
@@ -37,6 +38,7 @@ class SpawnCaps {
     required this.hosted,
     required this.payload,
     required this.zeroCopyTransfer,
+    this.isolated = false,
   });
 
   /// Reads capabilities from the JSON object in a `hello` payload.
@@ -51,6 +53,7 @@ class SpawnCaps {
       SpawnPayload.aot,
     ),
     zeroCopyTransfer: json['zeroCopyTransfer'] == true,
+    isolated: json['isolated'] == true,
   );
 
   /// What is executing the handler.
@@ -66,17 +69,26 @@ class SpawnCaps {
   /// fall back to the isolate message copy.
   final bool zeroCopyTransfer;
 
+  /// Whether this handler has its own isolate or Web Worker global state.
+  ///
+  /// In-process tests and the web debug fallback share the caller's globals.
+  /// They must not tear down a shared singleton as if it belonged only to the
+  /// worker. This describes execution ownership, not a security sandbox or a
+  /// promise of exclusive native resources. Absent on older peers means false.
+  final bool isolated;
+
   /// The JSON object carried in a `hello` payload.
   Map<String, Object?> toJson() => <String, Object?>{
     'hosted': hosted.name,
     'payload': payload.name,
     'zeroCopyTransfer': zeroCopyTransfer,
+    'isolated': isolated,
   };
 
   @override
   String toString() =>
       'SpawnCaps(hosted: ${hosted.name}, payload: ${payload.name}, '
-      'zeroCopyTransfer: $zeroCopyTransfer)';
+      'zeroCopyTransfer: $zeroCopyTransfer, isolated: $isolated)';
 
   static T _enumByName<T extends Enum>(
     List<T> values,

@@ -6,6 +6,7 @@ import 'errors.dart';
 import 'frame.dart';
 import 'payload.dart';
 import 'service.dart';
+import 'termination.dart';
 import 'transport.dart';
 import 'wire.dart';
 
@@ -106,10 +107,21 @@ class Worker implements WorkerClient {
   /// returned normally, or was closed by the host, leaves this `null`.
   Object? get error => _core.fatalError;
 
-  /// Completes when the worker has stopped, however it stopped.
+  /// Completes after logical channel shutdown, however it was requested.
   ///
-  /// Never completes with an error; see [error] and [events].
+  /// Never completes with an error; see [error] and [events]. This does not
+  /// acknowledge dedicated worker exit; see [termination].
   Future<void> get done => _core.done;
+
+  /// The backend's evidence about this dedicated worker's termination.
+  ///
+  /// Independent of [done] and [close]. Native callers retiring resources must
+  /// require [WorkerTerminationEvidence.nativeOnExit]. Browser callers must
+  /// explicitly accept the `terminate()` request policy. In-process workers
+  /// report [WorkerTerminationEvidence.notStarted], without claiming their
+  /// handler has returned; transports without observation report
+  /// [WorkerTerminationEvidence.unobservable].
+  Future<WorkerTerminationEvidence> get termination => _core.termination;
 
   /// Creates another client of this same worker.
   ///
@@ -141,7 +153,7 @@ class Worker implements WorkerClient {
     timeout: timeout,
   );
 
-  /// Shuts the worker down.
+  /// Shuts the worker's channels down.
   ///
   /// By default this is graceful: the worker is asked to stop, its
   /// `WorkerChannel.messages` stream closes so a loop over it ends, and the
@@ -160,8 +172,9 @@ class Worker implements WorkerClient {
   /// code that owns the resource: unblock it first (close the pipe, shut down
   /// the socket) so the native call returns, and *then* close the worker.
   /// A `Worker` cannot do that for you, because only the caller knows what the
-  /// handler is blocked on. Web Workers have no such caveat: `terminate()`
-  /// really does stop one.
+  /// handler is blocked on. Await [termination] and inspect its evidence before
+  /// retiring a resource. On the web that evidence acknowledges a successful
+  /// `terminate()` request, rather than an allocator or thread-exit receipt.
   @override
   Future<void> close({bool force = false, Duration grace = _gracePeriod}) =>
       _core.shutdown(force: force, grace: grace);
@@ -181,15 +194,36 @@ Future<Worker> createWorker(
   final worker = Worker._(core);
   try {
     await core.awaitHello(timeout);
-  } on Object {
-    await core.shutdown(force: true);
-    rethrow;
+  } on Object catch (error, stack) {
+    Object? cleanupError;
+    try {
+      await core.shutdown(force: true);
+    } on Object catch (cleanup) {
+      cleanupError = cleanup;
+    }
+    Error.throwWithStackTrace(
+      SpawnStartupException(
+        error is SpawnException
+            ? error.message
+            : 'could not start worker "${entry.asset}"',
+        cause: error is SpawnException ? error.cause : error,
+        termination: core.termination,
+        requestStop: transport.kill,
+        cleanupError: cleanupError,
+      ),
+      stack,
+    );
   }
   return worker;
 }
 
 class _WorkerCore {
-  _WorkerCore(this.entry, this._transport, this._grant) {
+  _WorkerCore(this.entry, this._transport, this._grant)
+    : termination = _transport is WorkerTerminationTransport
+          ? (_transport as WorkerTerminationTransport).termination
+          : Future<WorkerTerminationEvidence>.value(
+              WorkerTerminationEvidence.unobservable,
+            ) {
     _subscription = _transport.incoming.listen(
       _onFrame,
       onDone: _onTransportDone,
@@ -203,6 +237,7 @@ class _WorkerCore {
   final SpawnEntry entry;
   final WorkerTransport _transport;
   final ServiceGrant? _grant;
+  final Future<WorkerTerminationEvidence> termination;
 
   late final StreamSubscription<Frame> _subscription;
   late final _Client ownerClient;
@@ -304,6 +339,29 @@ class _WorkerCore {
               ?.completeError(error, StackTrace.current);
           return;
         }
+        // 'WorkerError' is the web backend's post-load `onerror` (an uncaught
+        // throw inside the worker — 2026-09-01 it was a console.log hook
+        // crashing under dart2js): the worker is still running, the request
+        // it was serving never answered, and the browser's message is the
+        // only diagnosis there is. Same treatment as a clone failure: fail
+        // what is in flight WITH the message, keep the worker.
+        if (type == 'DataCloneError' || type == 'WorkerError') {
+          // The WORKER is alive; ONE message could not be deserialized there
+          // and it cannot say which (the id was inside the data). Every
+          // request in flight might be the one, so all of them fail with the
+          // reason — and the worker stays, because the next portable message
+          // will be delivered as usual. With nothing in flight it was a
+          // `post`, and the events stream is the only place left to say so.
+          final orphans = List<_Pending>.of(_pending.values);
+          _pending.clear();
+          if (orphans.isEmpty) {
+            _emitToAll(_Event.error(error, StackTrace.current));
+          }
+          for (final pending in orphans) {
+            pending.completeError(error, StackTrace.current);
+          }
+          return;
+        }
         fatalError = error;
         _emitToAll(_Event.error(error, StackTrace.current));
         unawaited(shutdown(force: true));
@@ -335,7 +393,18 @@ class _WorkerCore {
   Future<void> shutdown({required bool force, Duration grace = _gracePeriod}) {
     final existing = _shutdownFuture;
     if (existing != null) return existing;
-    return _shutdownFuture = _shutdown(force: force, grace: grace);
+    final completer = Completer<void>();
+    final future = _shutdownFuture = completer.future;
+    // Publish before send/kill/cancel: those can invoke reentrant callbacks.
+    unawaited(
+      _shutdown(force: force, grace: grace).then<void>(
+        (_) => completer.complete(),
+        onError: (Object error, StackTrace stack) {
+          completer.completeError(error, stack);
+        },
+      ),
+    );
+    return future;
   }
 
   Future<void> _shutdown({required bool force, required Duration grace}) async {

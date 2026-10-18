@@ -68,6 +68,29 @@ $ dart run spawn:build
 spawn:build: 1 built, 0 up to date
 ```
 
+Flutter Wasm and other WasmGC applications can compile their workers to Wasm
+without changing the entry or asset URL:
+
+```console
+$ dart run spawn:build --target wasm
+  peaks_worker  built  (wasm, 204 kB)
+```
+
+The stable `.dart.js` asset becomes a small bootstrap beside the generated
+`.dart.wasm` and `.dart.mjs` files. It queues the initial Spawn message while
+the module starts. Packages shipping Wasm workers must include all three files
+as assets. A Wasm-only payload cannot run in browsers without Dart's WasmGC
+features. To ship both compiled variants at the same asset URL, use:
+
+```console
+$ dart run spawn:build --target hybrid
+```
+
+Hybrid also produces `.dart.fallback.js`. The bootstrap checks Dart's required
+Wasm features before loading the Wasm payload, and loads the JS worker if the
+probe or Wasm startup fails. Include all four files as assets. The JavaScript
+target remains the default and smallest compatibility build.
+
 **4. Spawn it:**
 
 ```dart
@@ -233,7 +256,8 @@ test('answers a probe', () async {
 |---|---|---|---|
 | Windows / macOS / Linux / Android / iOS | `Isolate.spawn` | none needed (AOT) | skips the copy for byte payloads |
 | Web (all current browsers) | `Worker` | dart2js (`spawn:build`) | real move, source detaches |
-| Web, WasmGC payload | `Worker` | dart2wasm | planned; heap-born bytes copy once |
+| Web, WasmGC payload | `Worker` | dart2wasm (`spawn:build --target wasm`) | JS-owned buffers move; WasmGC heap bytes copy out once |
+| Web, hybrid payload | `Worker` | dart2wasm plus dart2js (`spawn:build --target hybrid`) | Wasm when supported; JS worker fallback otherwise |
 
 One caveat worth knowing before you rely on `close(force: true)`: on native, a
 worker blocked inside a **synchronous native call** cannot be killed.

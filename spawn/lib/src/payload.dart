@@ -127,14 +127,24 @@ void checkTransfer(List<Object>? transfer) {
 /// the payload it belongs to.
 bool bufferMatches(Object candidate, Object buffer) {
   if (identical(candidate, buffer)) return true;
+  // 🔴 `==`, NOT `identical`, for ByteBuffer comparisons. On the VM every
+  // `.buffer` access on internal typed data allocates a FRESH wrapper
+  // (`identical(u.buffer, u.buffer)` is false), so the identical-based
+  // matches here never fired and the native backend's DESIGNED transfer
+  // machinery was dead code since it shipped — every "transferred" payload
+  // took the plain isolate-send fallback instead, invisibly, because the
+  // fallback delivers identical bytes and every test asserts content. The VM's
+  // `_ByteBuffer.==` compares the BACKING STORE's identity, which is the
+  // question actually being asked; on the web `.buffer` is the one JS
+  // ArrayBuffer and `==` degrades to `identical`, unchanged.
   if (candidate is TypedData && buffer is ByteBuffer) {
-    return identical(candidate.buffer, buffer);
+    return candidate.buffer == buffer;
   }
   if (candidate is ByteBuffer && buffer is TypedData) {
-    return identical(candidate, buffer.buffer);
+    return candidate == buffer.buffer;
   }
   if (candidate is TypedData && buffer is TypedData) {
-    return identical(candidate.buffer, buffer.buffer);
+    return candidate.buffer == buffer.buffer;
   }
   return false;
 }

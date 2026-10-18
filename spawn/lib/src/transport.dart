@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'frame.dart';
+import 'termination.dart';
 
 /// One end of the pipe between a host and its worker.
 ///
@@ -10,7 +11,7 @@ import 'frame.dart';
 abstract interface class WorkerTransport {
   /// Frames arriving from the other end.
   ///
-  /// Single subscription. Closes when the other end is gone.
+  /// Single subscription. Closes when the logical route is detached.
   Stream<Frame> get incoming;
 
   /// Sends [frame] to the other end.
@@ -19,9 +20,24 @@ abstract interface class WorkerTransport {
   /// the layer above has already reported the closure.
   void send(Frame frame);
 
-  /// Completes when the other end has gone away, for any reason.
+  /// Completes after logical route shutdown, for any reason.
+  ///
+  /// Dedicated termination is a separate [WorkerTerminationTransport] receipt.
   Future<void> get done;
 
-  /// Ends the other end immediately, without waiting for it to finish.
+  /// Requests immediate stop and closes the logical route.
+  ///
+  /// Does not wait for dedicated exit evidence.
   Future<void> kill();
+}
+
+/// An optional dedicated termination capability of a host transport.
+///
+/// Implemented by transports that own a dedicated actor, and explicitly by
+/// in-process hosts. Worker-end transports do not advertise this capability.
+/// Logical [WorkerTransport.done] and [WorkerTransport.kill] are independent
+/// of this receipt and cannot supply missing physical exit evidence.
+abstract interface class WorkerTerminationTransport {
+  /// The immutable termination receipt for this transport's dedicated actor.
+  Future<WorkerTerminationEvidence> get termination;
 }

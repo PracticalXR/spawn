@@ -34,19 +34,24 @@
 library;
 
 export 'src/caps.dart' show SpawnCaps, SpawnHost, SpawnPayload;
-export 'src/channel.dart' show WorkerChannel;
+export 'src/channel.dart' show SpawnReply, SpawnPreparedReply, WorkerChannel;
 export 'src/entry.dart' show SpawnEntry, SpawnEntryKind, WorkerHandler;
 export 'src/errors.dart'
     show
         RemoteWorkerError,
         SpawnException,
         SpawnPayloadMissingError,
+        SpawnPayloadStartupException,
+        SpawnStartupException,
         SpawnServiceUnavailableError;
 export 'src/jobs.dart' show JobEntry, Jobs;
 export 'src/platform_value.dart' show PlatformValue;
 export 'src/service.dart'
     show ServiceGrant, ServiceProvider, SpawnService, SpawnServices;
 export 'src/spawn.dart' show spawn, spawnLocal;
+export 'src/termination.dart'
+    show SpawnStartupFailure, WorkerTerminationEvidence;
+export 'src/transport.dart' show WorkerTerminationTransport;
 export 'src/wire.dart'
     show
         WireEnvelope,
